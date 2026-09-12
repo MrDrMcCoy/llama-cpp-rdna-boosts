@@ -1,5 +1,12 @@
 # 2026-09-12 — QSA *forced-sparse* q8_0 residual (TODO item 4): deep dive
 
+> **RESOLVED 2026-09-12 (13)/(14).**  The residual was root-caused as the QSA indexer score's flattened
+> `ne11 = 4 * n_tps` crossing `MMVF_MAX_BATCH_SIZE` at `n_tps = 3` (block-14 eighth amendment,
+> `MMVF_MAX_BATCH_SIZE_FLAT` = 32) and fixed; the gfx1151 cross-check validated the fix (forced-sparse
+> `plain == draft-mtp`, all eight native KV types pure at n_max 1/2/3/5/7, `mstep` W = 1..8 pure).  See
+> `WORKLOG.md` 2026-09-12 (13)/(14), `GREEDY-PURITY.md` §18/§29.  The body below is the original
+> (pre-fix) investigation.
+
 Box: Strix Halo APU (gfx1151), 1 device, ROCm 7.14 (`/opt/rocm-7.14-gfx1151`).
 Build: the delivered 15-patch set, worktree `/home/stew675/ll25/verify` (tip `9f46e926f`, tree
 `f4791066f4a582316b1ca95f51c96cd10b905ef7`).

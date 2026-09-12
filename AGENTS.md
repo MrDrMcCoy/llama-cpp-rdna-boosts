@@ -120,7 +120,8 @@ re-based 2026-09-06 from `9cffdcc80`, re-based 2026-09-02 from `0eadefebd`).
   `MMVF_MAX_BATCH_SIZE` at `n_tps = 3`, so the verify batch fell through to MMF while decode stayed on
   MMVF and a top-k near-tie flipped; the guard now covers the whole flattened band
   `MMVF_MAX_BATCH_SIZE_FLAT = 32` with `mul_mat_vec_f` instantiated for `ncols_dst` 9..32 —
-  `GREEDY-PURITY.md` §29).
+  `GREEDY-PURITY.md` §29; **gfx1151-validated 2026-09-12 (14)**: the forced-sparse text residual is
+  cleared and all eight native KV types are pure at n_max 1/2/3/5/7).
   See the block-14 notes in `patches/README.md` and the beta
   validation record in `beta/qwen4exp/README.md`.
 - Block **15** (STAGED in `beta/block-15-campaign-wins/`, **NOT a delivery patch**): the attention-memory campaign wins --
@@ -526,8 +527,12 @@ Consequences, so it is not re-litigated:
   flattened band (`MMVF_MAX_BATCH_SIZE_FLAT` = 32, `ncols_dst` 9..32 instantiated) so W = 1..8 is
   bit-identical with decode's `Thash` unchanged (the earlier "driver-level, not a width dependence"
   conclusion was drawn from gfx1151's `mstep`, which is pure there).  The gfx1151 `plain != draft-mtp`
-  **text** residual (`a57bc13bbf2a` vs `n3 3124adfd2b94`) did not reproduce on gfx1201; a cross-check on
-  gfx1151 against branch `block14-band-uniformity` is pending (TODO item 17).  See `GREEDY-PURITY.md`
+  **text** residual (`a57bc13bbf2a` vs `n3 3124adfd2b94`) did not reproduce on gfx1201; the gfx1151
+  cross-check against branch `block14-band-uniformity` **validated 2026-09-12 (14)**: the residual is
+  gone (`a57bc13bbf2a` both, first diff char 458 pre-fix), all eight native KV types (f16/bf16/q8_0/
+  q4_0/q4_1/q5_0/q5_1/iq4_nl) are pure in the forced-sparse regime at n_max 1/2/3/5/7, and `mstep`
+  `W = 1,2,3,4,5,8` is 0 mismatches with decode's `Thash` unchanged (`ea713a1c1f515bc1`) — TODO
+  item 17 closed and item 4(b) no longer *Documented*.  See `GREEDY-PURITY.md`
   §§16-18, §28-§29 and
   `wip/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md`.
 - The one-sided AR wait (dev0/bus-06 dispatch-gap asymmetry, ~12.7 µs/call)

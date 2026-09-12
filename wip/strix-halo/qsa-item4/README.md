@@ -5,23 +5,25 @@ Everything needed to reproduce item 4's residual and its gates, durable in-repo 
 (+ §§16-17, 26) and the records are `../RECORD-2026-09-12-qsa-item4-deep-dive.md` (the 2026-09-12 (6)
 deep dive) and `../RECORD-2026-09-12-qsa-sparse-width.md` (the earlier disposition).
 
-## Quick state (2026-09-12 (12), delivery tip `c6f1e8e78`)
+## Quick state (2026-09-12 (14), delivery tip `d306d4b4b`)
 
 * **Default gfx1151 configs are pure** — shallow dense for every KV type (q8_0 `e8f8bba3942b`, 626
   chars on `p5000.txt`) and deep sparse (~74K: f16 `83e0ed0f0f80`, q8_0 `7205399d367d`), so the 64K
   decode crossover stays.  Re-check these on the current tip before localising anything: the delivery
   has since gained the block-02 GDN rollback bound and the block-14 prefill arm (default 0), neither of
   which was supposed to move default numerics.
-* **The residual needs the *forced* sparse regime**: `LLAMA_QSA_DENSE_DECODE_UNTIL=0` + q8_0 KV +
-  `p5000.txt` → `plain` != `draft-mtp n3`.  **Sub-item (a) is FIXED** (block-14 amendment (seventh),
-  2026-09-12 (12)): the `embeddings_nextn` export no longer defers the last-layer logits gather, so
-  `mstep NEXTN=1` is 0 mismatches (was 1 at `pos = 4293`) and the prefill logits are bit-identical to
-  `--spec-type none`.  **Sub-item (b) is CLOSED as a documented, deliberately-not-fixed limitation**
-  (`TODO.md` *Documented*): a temporary target-logits dump in the real `server-context.cpp` driver (the
-  engine `llama-cli` runs) pins the first divergence to target position **4432**, identical accepted
-  token 381, argmax flips **264 -> 9859** — a QSA-indexer selection/state divergence, not a width one;
-  see `../RECORD-2026-09-12-qsa-item4-deep-dive.md` and `GREEDY-PURITY.md` §18/§28.  The kill switch is
-  `LLAMA_QSA_OFF=1`; the delivery default (dense decode below 64K) is pure.
+* **Both sub-items are fixed and gfx1151-validated (TODO item 17, closed 2026-09-12 (14)).**  Sub-item
+  (a): the `embeddings_nextn` export no longer defers the last-layer logits gather (block-14 amendment
+  (seventh)), so `mstep NEXTN=1` is 0 mismatches (was 1 at `pos = 4293`).  Sub-item (b): the
+  forced-sparse residual was the QSA indexer score's flattened `ne11 = 4 * n_tps` crossing
+  `MMVF_MAX_BATCH_SIZE` at `n_tps = 3` (verify batch on MMF, decode on MMVF); the block-14 amendment
+  (eighth) keeps the whole flattened band on the decode family (`MMVF_MAX_BATCH_SIZE_FLAT` = 32 +
+  `mul_mat_vec_f` `ncols_dst` 9..32).  On gfx1151 the forced-sparse **text residual is gone**:
+  `LLAMA_QSA_DENSE_DECODE_UNTIL=0` + q8_0 + `p5000.txt` gives `plain == draft-mtp n3 == a57bc13bbf2a`
+  (632 chars; pre-fix n3 `3124adfd2b94`, first diff char 458), every native KV type
+  (f16/bf16/q8_0/q4_0/q4_1/q5_0/q5_1/iq4_nl) is pure at n_max 1/2/3/5/7, and the `mstep` matrix
+  `W = 1,2,3,4,5,8` is 0 mismatches with decode's `Thash` unchanged (`ea713a1c1f515bc1`).  Pre-fix only
+  q8_0 and q5_0 were impure.  See `WORKLOG.md` 2026-09-12 (13)/(14) and `GREEDY-PURITY.md` §29.
 
 ## Instruments
 
@@ -48,12 +50,12 @@ clang++ -O2 -std=c++17 -I include -I ggml/include -I src \
 ## Repro
 
 ```sh
-# the forced-sparse residual (item 4's config)
-BIN=/home/stew675/ll25/verify/build-rocm/bin KV=q8_0 LLAMA_QSA_DENSE_DECODE_UNTIL=0 \
-  bash wip/strix-halo/qsa-item4/gate.sh          # plain vs n3 -> two different shas
+# the forced-sparse band gate (item 4's config) — now PURE on the delivery (item 17 validated): plain == n3
+BIN=<built bin> KV=q8_0 LLAMA_QSA_DENSE_DECODE_UNTIL=0 \
+  bash wip/strix-halo/qsa-item4/gate.sh          # both -> a57bc13bbf2a (pre-fix n3 was 3124adfd2b94)
 
-# the n_max signature (pure at 1, 2/3/5/7 all divergent, first diff char 458)
-BIN=/home/stew675/ll25/verify/build-rocm/bin KV=q8_0 LLAMA_QSA_DENSE_DECODE_UNTIL=0 \
+# the n_max sweep — now pure at 1/2/3/5/7 (pre-fix 2/3/5/7 diverged, first diff char 458)
+BIN=<built bin> KV=q8_0 LLAMA_QSA_DENSE_DECODE_UNTIL=0 \
   bash wip/strix-halo/qsa-item4/nmax.sh
 
 # width purity at every verify width (expect 0 mismatches)
@@ -61,7 +63,7 @@ LLAMA_QSA_DENSE_DECODE_UNTIL=0 W=4 RB=3 RS=3 JUNK=1 N=200 CTX=8192 CTK=q8_0 CTV=
   /tmp/mstep /llm/models/Qwen3.8/Flash-Next/IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
   wip/strix-halo/qsa-item4/p5000.txt 4293 2048
 
-# the embeddings_nextn prefill ULP (expect mismatches=1 at pos=4293, only with NEXTN=1)
+# the embeddings_nextn prefill ULP (fixed: 0 mismatches; was 1 at pos=4293, only with NEXTN=1)
 LLAMA_QSA_DENSE_DECODE_UNTIL=0 W=4 NEXTN=1 N=200 CTX=8192 CTK=q8_0 CTV=q8_0 SPLIT=layer NGL=99 \
   /tmp/mstep <model> wip/strix-halo/qsa-item4/p5000.txt 4293 2048
 ```
@@ -69,8 +71,9 @@ LLAMA_QSA_DENSE_DECODE_UNTIL=0 W=4 NEXTN=1 N=200 CTX=8192 CTK=q8_0 CTV=q8_0 SPLI
 ## Gates that must hold for anything landed from here
 
 `test-backend-ops -o FLASH_ATTN_QSA` (22/22) and `-o FLASH_ATTN_EXT`; `GATED_DELTA_NET` 46/46 (the GDN
-path is now rollback-bounded, §27); `mstep` W=4 == 0 mismatches with the W=8 position list unmoved; the
-band text gate (`plain == n_max 1/2/3/5/7`) for q8_0 **and** f16; the dense-masked oracle
+path is now rollback-bounded, §27); `mstep` `W = 1,2,3,4,5,8` == 0 mismatches with a stable `Thash`; the
+band text gate (`plain == n_max 1/2/3/5/7`) in the forced-sparse regime for **all eight native KV types**
+and in the default (dense) regime; the dense-masked oracle
 (`LLAMA_QSA_SPARSE_FA=0`) + a perplexity comparison if attention numerics move (§21 — perplexity vs the
 dense masked path, *not* MTP acceptance); the random-text leak probe if a mask/visibility path is
 touched (§23); same-seed coherence against the known-good build; and Protocol A's MTP gate

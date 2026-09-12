@@ -1,5 +1,34 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (14) — gfx1151 cross-check of the block-14 (eighth) fix: TODO item 4 fully closed
+
+TODO item 17 (the gfx1151 cross-check) is resolved and item 4 is fully closed.  Validated on gfx1151
+(Strix Halo, ROCm 7.14 at `/opt/rocm-7.14-gfx1151`) against branch `block14-band-uniformity`: fresh
+worktree at `9113cc188` + `scripts/apply-all.sh` -> strict **15/15** `git am`, 0 whitespace warnings,
+applied tree **`3b0874b6aa367fea846a437b45f1689bd173b38c`** (== canonical).
+
+* **The forced-sparse text residual is gone.**  `LLAMA_QSA_DENSE_DECODE_UNTIL=0` + q8_0 + `p5000.txt`
+  (seed 42, temp 0, n 128, `-sm layer`): pre-fix (the amendment-7 build) `plain a57bc13bbf2a` vs n3
+  `3124adfd2b94` (first diff **char 458**); post-fix `plain == n3 == a57bc13bbf2a` (632 chars).  All
+  eight native KV types are pure in the forced-sparse regime (f16 `cb2912b186b9`, bf16 `945f89766e3c`,
+  q8_0 `a57bc13bbf2a`, q4_0 `9afd1d55a5ae`, q4_1 `aff1978cf720`, q5_0 `296f8ebcd246`, q5_1
+  `a88803f4ebf9`, iq4_nl `8e4437794660`); pre-fix only q8_0 and q5_0 were impure, and n_max 1/2/3/5/7 is
+  pure for both.  Default (dense) gates unchanged: q8_0 `e8f8bba3942b` (626), f16 `0fc4910d5824` (632).
+* **The `mstep` matrix is 0 mismatches at every width**: `W = 1,2,3,4,5,8` (forced-sparse q8_0) all PURE
+  with a stable `Thash = ea713a1c1f515bc1`, **unchanged vs the pre-fix build**.  (gfx1151's mstep was
+  already pure at default params pre-fix, unlike gfx1201's W=2/W>=3 boundary, so the text gate is the
+  discriminator on this arch.)
+* **Op suites**: `FLASH_ATTN_QSA` **22/22**, `GATED_DELTA_NET` **46/46**, `FLASH_ATTN_EXT` **5935/5935**.
+* **MTP acceptance (Protocol A, n_max 3)**: forced-sparse q8_0 `0.51333` (77/150), pos-1
+  `(0.740, 0.420, 0.380)`; default q8_0 `0.57554` (80/139) and default f16 `0.51678` (77/149) =
+  bit-identical to the pre-fix values.
+* **Beta**: the 17th block-15 re-cut applies cleanly on the new tree (`git am -3` -> tree
+  `c3142fe0b311757f458647f172f623859f5bc983`, the recorded beta tree).
+* **Outcome**: TODO item 4(b) dropped from *Documented* and item 17 closed; the delivery branch merges
+  into `main` with no code change beyond the (eighth) amendment already in `patches/`.  Records: this
+  entry, `TODO.md`, `patches/README.md` (the (eighth) section), `GREEDY-PURITY.md` §29, the harness
+  `wip/strix-halo/qsa-item4/`.
+
 ## 2026-09-12 (13) — block-14 amendment (eighth): the QSA indexer-score decode/verify band-uniformity fix
 
 Block-14 amendment (eighth), found by the gfx1201 investigation of TODO item 4's q8_0 forced-sparse
@@ -39,7 +68,9 @@ replay), `make-patches.sh` default tip updated, `rdna-boosts-all.patch` regenera
 * **No delivery behaviour change outside the flattened band**: for `ne11 <= 8` (decode/verify of every
   ordinary op) and `ne11 > 32` (prefill) the guard decision is unchanged, so dense models are
   unaffected by construction (verified: 27B `plain == draft-mtp`).
-* **Open cross-check**: whether this also removes the gfx1151 `plain != draft-mtp` text residual that
+* **Open cross-check** (confirmed 2026-09-12 (14): the gfx1151 forced-sparse text residual is gone and
+  all eight native KV types are pure — see the (14) entry): whether this also removes the gfx1151
+  `plain != draft-mtp` text residual that
   `TODO.md` *Documented* records (same signature, different arch - gfx1151's `mstep` was reported pure)
   is to be confirmed by the gfx1151 box against this branch.  The fix is arch-independent in the engine
   (per-arch MMVF tables aside), so the branch is the test vehicle.

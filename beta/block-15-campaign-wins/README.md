@@ -42,9 +42,10 @@ re-cut and re-validated end to end.
   **`c3142fe0b311757f458647f172f623859f5bc983`**.  The apply was conflict-free: block 15 does not touch
   the three delivery files this amendment changes (`ggml/src/ggml-cuda/mmvf.cu`, `mmvf.cuh`,
   `ggml-cuda.cu`), and round-tripped (fresh worktree at the new base + strict `git am` -> identical
-  tree).  gfx1151 revalidation is pending against the delivery branch `block14-band-uniformity` (the
-  same branch carries the fix); the block-15 gate table is unchanged and the amendment is expected to
-  be tester-neutral (it only changes the kernel family of flattened `ne11` 9..32 matmuls).
+  tree).  gfx1151: the patch round-trips on the canonical delivery tree (`git am -3` -> identical tree
+  `c3142fe0b3`), and the delivery cross-check (2026-09-12 (14)) validated the (eighth) fix there; the
+  block-15 gate table is unchanged and the amendment is tester-neutral (it only changes the kernel
+  family of flattened `ne11` 9..32 matmuls).
 * **Re-cut a sixteenth time 2026-09-12 (12)** after the block-14 **MTP-export logits-purity fix**
   amendment (TODO item 4(a)).  Base **`c6f1e8e78`** (tree
   `e1e42e23c2913cd529b0064eb1cb74525a746098`) -> **beta tip `bdd09891d`**, tree

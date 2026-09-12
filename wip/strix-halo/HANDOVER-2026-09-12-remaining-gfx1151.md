@@ -1,5 +1,9 @@
 # HANDOVER — remaining gfx1151 (Strix Halo) work + TODO cleanup (2026-09-12)
 
+> **STATUS UPDATE 2026-09-12 (14):** item 4's forced-sparse residual is now **root-caused and fixed**
+> (block-14 eighth amendment) and **gfx1151-validated** (TODO item 17 closed) — see `WORKLOG.md`
+> 2026-09-12 (13)/(14).  The "still open" notes below are the pre-fix state.
+
 Self-contained brief for the next session.  The context that produced it is at ~550K tokens and will be
 compacted, so treat this file (plus the docs it points at) as the source of truth.  Box: Strix Halo APU,
 **gfx1151**, 1 device, ROCm 7.14 at `/opt/rocm-7.14-gfx1151`, 123 GiB unified RAM.

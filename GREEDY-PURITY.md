@@ -52,7 +52,7 @@ finding, narrative moved to the findings file):
 | 15 | F2 cause 2: upstream's per-type mmvq caps are numeric boundaries inside the band (fixed; also a 14-26 % win) | fix |
 | 16 | cause 3: the QSA dense decode arm was `n_tokens == 1` — now `<= QSA_DECODE_BAND` (8) | fix |
 | 17 | the MoE shared-expert epilogue is token-generic with `nwarps` pinned | fix |
-| 18 | the QSA sparse regime on gfx1151: the two 2026-09-11 width-dependences do not reproduce; the MTP-export logits ULP is fixed; one forced-arm q8_0 residual is documented, not fixed | fix + current |
+| 18 | the QSA sparse regime on gfx1151: the two 2026-09-11 width-dependences do not reproduce; the MTP-export logits ULP is fixed; the forced-arm q8_0/q5_0 residual is root-caused and fixed (gfx1151-validated 2026-09-12 (14)) | fix + current |
 | 19 | purity first: a correctness fix may cost a few percent — land it, record it, repay it | doctrine |
 | 20 | a newly enabled KV type is a new kernel family (the enablement checklist) | doctrine |
 | 21 | a shared staging tile makes a block head-homogeneous (the QSA K/V-head bug + the two instruments that found it) | doctrine + fix |
@@ -567,7 +567,7 @@ band's `pl=8` cost — see **§24**.
 
 Narrative: `../archive/docs/GREEDY-PURITY-FINDINGS.md` §17.
 
-## 18. The QSA *sparse* regime on gfx1151: the MTP-export logits ULP is fixed and the q8_0 residual is documented, not fixed (2026-09-12; extended 2026-09-12 (6); closed 2026-09-12 (12))
+## 18. The QSA *sparse* regime on gfx1151: the MTP-export logits ULP and the q8_0/q5_0 residual are both root-caused and fixed (2026-09-12; extended 2026-09-12 (6); closed 2026-09-12 (12); gfx1151-validated 2026-09-12 (14))
 
 §18 previously recorded **two** width-dependences in the QSA sparse regime, measured 2026-09-11 during
 the cause-3 hunt (on the 3-GPU gfx1201 box, with the sparse arm forced by
@@ -636,9 +636,13 @@ the sparse FA kernel (`LLAMA_QSA_SPARSE_FA=0` also diverges — the shared dense
 The only reconcilers are `LLAMA_QSA_OFF=1` (the user affordance) and `GGML_CUDA_GDN_CHUNKED=0`
 (a trajectory perturbation).  Sub-item **(a)** is fixed in the block-14 seventh amendment — the
 `embeddings_nextn` export no longer defers the logits gather (see §28) — and the prefill ULP no
-longer exists.  Sub-item **(b)** is recorded as a **measured, deliberately-not-fixed limitation** in
-`TODO.md` (*Documented*): forced-arm (`LLAMA_QSA_DENSE_DECODE_UNTIL=0`), shallow, `q8_0`-only and
-prompt-dependent; the delivered default (dense decode below 64K) is pure.  Evidence/records:
+longer exists.  Sub-item **(b)** — forced-arm (`LLAMA_QSA_DENSE_DECODE_UNTIL=0`), shallow — was then
+**root-caused and fixed** by the gfx1201 investigation (2026-09-12 (13), block-14 eighth amendment,
+§29): the flattened indexer score (`ne11 = 4 * n_tps`) crossed `MMVF_MAX_BATCH_SIZE` at `n_tps = 3`,
+putting the verify batch on MMF while decode stayed on MMVF.  **gfx1151 cross-check validated
+2026-09-12 (14):** the forced-sparse text residual is gone (`a57bc13bbf2a` both, was n3
+`3124adfd2b94`, first diff char 458), all eight native KV types are pure at n_max 1/2/3/5/7, and
+`mstep` `W = 1,2,3,4,5,8` is 0 mismatches with decode's `Thash` unchanged.  Evidence/records:
 `wip/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md`, `wip/strix-halo/qsa-item4/` (harness).
 
 ## 19. Purity first: the measured trade (2026-09-11, policy)

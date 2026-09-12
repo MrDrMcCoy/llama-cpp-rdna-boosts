@@ -35,9 +35,9 @@
 > band-uniformity amendment (TODO item 4(b) root cause).  Base `d306d4b4b` (tree
 > `3b0874b6aa367fea846a437b45f1689bd173b38c`) -> **beta tip `f399b1349`**, tree
 > **`c3142fe0b311757f458647f172f623859f5bc983`**.  Conflict-free (block 15 does not touch
-> `mmvf.cu`/`mmvf.cuh`/`ggml-cuda.cu`), round-tripped strict `git am` -> identical tree.  gfx1151
-> revalidation pending against delivery branch `block14-band-uniformity`.  No tester-visible change
-> expected.  See `README.md`.
+> `mmvf.cu`/`mmvf.cuh`/`ggml-cuda.cu`), round-tripped strict `git am` -> identical tree.  gfx1151:
+> round-trips on the canonical tree and the delivery cross-check (2026-09-12 (14)) validated the
+> (eighth) fix there.  No tester-visible change.  See `README.md`.
 > **Re-cut a sixteenth time 2026-09-12 (12)** after the block-14 MTP-export logits-purity amendment
 > (TODO item 4(a)).  Base `c6f1e8e78` (tree `e1e42e23c2913cd529b0064eb1cb74525a746098`) -> **beta tip
 > `bdd09891d`**, tree **`3a47913c0bdca7f1154a8f0310a20435a36c0faa`**, patch **206 454 bytes**.  Conflict-free
