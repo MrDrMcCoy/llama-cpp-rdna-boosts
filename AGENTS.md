@@ -7,7 +7,7 @@ anything in `~/llama-cpp-rdna-boosts/` (or acting on its behalf).
 
 A **delivery repo**: it packages the RDNA/ROCm work of the
 [`stew675/llama.cpp`](https://github.com/stew675/llama.cpp) fork
-(`rdna-boosts` branch) as a **15-patch set** (block 00 + blocks 01-14) that
+(`rdna-boosts` branch) as a **16-patch set** (block 00 + blocks 01-15) that
 applies to a clean llama.cpp checkout at the fork point **`9113cc188`** (re-based 2026-09-08
 from `050dde50c`, itself re-based 2026-09-07 from `465e49b9c`, itself
 re-based 2026-09-06 from `9cffdcc80`, re-based 2026-09-02 from `0eadefebd`).
@@ -124,7 +124,7 @@ re-based 2026-09-06 from `9cffdcc80`, re-based 2026-09-02 from `0eadefebd`).
   cleared and all eight native KV types are pure at n_max 1/2/3/5/7).
   See the block-14 notes in `patches/README.md` and the beta
   validation record in `beta/qwen4exp/README.md`.
-- Block **15** (STAGED in `beta/block-15-campaign-wins/`, **NOT a delivery patch**): the attention-memory campaign wins --
+- Block **15** (`patches/0015`, **delivered 2026-09-12**, promoted from `beta/block-15-campaign-wins/`): the attention-memory campaign wins --
   **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived QSA
   per-block bias + derived visibility + the input-fill null guards
   (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), **W3** keys-only QSA
@@ -133,7 +133,7 @@ re-based 2026-09-06 from `9cffdcc80`, re-based 2026-09-02 from `0eadefebd`).
   default), **V4** native q8_0 K/V and **V5** native bf16 K/V in the FA
   kernels (both behind the same `GGML_CUDA_FA_KV_NATIVE`, **opt-in,
   default 0**).  The beta patch was cut 2026-09-10 and **amended twice on
-  2026-09-10: V5, then the RDNA3_5/gfx1151 fix** (beta patch tip `377f8e790`; the gfx1151
+  2026-09-10: V5, then the RDNA3_5/gfx1151 fix** (the gfx1151
   amendment enables V3 on a HIP iGPU -- the probe had rejected
   `GGML_BACKEND_DEVICE_TYPE_IGPU` -- and requires a single KV stream in
   `kq_mask_derivable()` so `n_seq_max > 1` contexts no longer abort in
@@ -143,10 +143,12 @@ re-based 2026-09-06 from `9cffdcc80`, re-based 2026-09-02 from `0eadefebd`).
   enabled), byte-identical output, ~1.3 % prefill / ~0.3 % decode cost
   (V4 ~1.7 %, V5 0.2-2.4 % depending on prompt length, V5 measured
   against the scratch it removes; on **gfx1151** the arms are *cheaper*/win
-  -- V4 +2.6 % at pp20480, V5 0.4-0.9 %); beta window open, pending the
-  maintainer's promotion go-ahead.  See
-  `beta/block-15-campaign-wins/README.md` and the
-  `WORKLOG.md` entry.
+  -- V4 +2.6 % at pp20480, V5 0.4-0.9 %).  The beta window closed with the
+  2026-09-12 promotion; the dense-arm blocker and its one-line fix are
+  closed, the revalidation reproduced every reserve number and the width
+  probe hashes, and the patch is now `patches/0015`.  See
+  `beta/block-15-campaign-wins/README.md` (PROMOTED),
+  `patches/README.md` (the promotion section) and the `WORKLOG.md` entry.
 
 The repo is NOT the fork: the fork (source of truth for the block commits)
 lives at `~/llama.cpp`, branch `rdna-boosts`.  **Fork-state warning (read
@@ -155,9 +157,9 @@ time been rebased onto a master **two commits newer than the recorded fork
 point** (`f3f1a8f27` iGPU lazy-load default + `304665fe7` SYCL
 IQ-type-for-MoE, both dated after `9113cc188`), so
 `git format-patch 9113cc188..<that branch's tip>` there would export those
-two upstream commits as patches 0001/0002.  The **canonical** 15-block
-chain is a rebuild of the delivery set at `9113cc188` (tip `d306d4b4b`, net tree
-  `3b0874b6aa367fea846a437b45f1689bd173b38c`,
+two upstream commits as patches 0001/0002.  The **canonical** 16-block
+chain is a rebuild of the delivery set at `9113cc188` (tip `0f4f83f9e`, net tree
+  `c3142fe0b311757f458647f172f623859f5bc983`,
 built by applying the delivery patches with `scripts/apply-all.sh` at
 `9113cc188`; block 02 amended 2026-09-11 with the whole-batch
 K-independent chunked GDN prefill and again 2026-09-12 with the rollback-bounded
@@ -192,14 +194,17 @@ tensor` the Meta device's `all_of()` IS the meta-split safety condition) — see
 which is what
 `scripts/make-patches.sh`'s default tip refers
 to; always regenerate from a canonical fork rebuilt at the fork point.
-**Block 15 (the attention-memory campaign) is NOT in the delivery** -- it
-is staged in `beta/block-15-campaign-wins/`.
+**Block 15 (the attention-memory campaign) is the delivery's last patch** --
+promoted 2026-09-12 from `beta/block-15-campaign-wins/` (`patches/0015`;
+the canonical 16-block tip is `0f4f83f9e`, tree
+`c3142fe0b311757f458647f172f623859f5bc983`).
 
 Block provenance on the canonical chain: block 00 added 2026-09-10 (FA
 small-batch KV-split width invariance, issue #25, plus the Vulkan
 masked-V fixes — see the block-00 section in `patches/README.md`);
-blocks 01-14 = the fork's block
-commits on master `9113cc188` (2026-09-08 re-base; block 01 refreshed
+blocks 01-15 = the fork's block
+commits on master `9113cc188` (block 15 = the promoted attention-memory
+campaign; 2026-09-08 re-base; block 01 refreshed
 2026-09-09 to the upstream PR #27210 review head `d236d41a2`, still one
 squashed block, and amended 2026-09-11 so `--spec-draft-n-max` is clamped to 7
 with a visible notice + `LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0` escape hatch; block 03 amended 2026-09-10 with the HIP masked-V/
@@ -244,7 +249,7 @@ plain decode disagreed with spec verify — `GREEDY-PURITY.md` §14)). The
 canonical `9113cc188` fork used for `make-patches.sh`
 regeneration is disposable and is re-created from `patches/` +
 `scripts/apply-all.sh` whenever it needs rebuilding (fresh clone at the
-fork point + apply) — the last regeneration (2026-09-10, the 15-block set
+fork point + apply) — an earlier regeneration (2026-09-10, the 15-block set
 with block 00 and the re-homed masked-V fixes) applied strict 15/15 `git am`
 and produced tip `505637d6e` (the 2026-09-11 block-02 amendment re-ran the
 regeneration: strict 15/15 `git am`, applied tree `fcf3e4bb7` == canonical,
@@ -260,9 +265,10 @@ whitespace, applied tree `928852cdc` == canonical, tip `389c5341f`).  Apart from
 block-02 and block-13 hunks the blocks' bodies are byte-identical to the
 previous regeneration apart from the `From <sha>` line and the
 `[PATCH NN/15]` series count (plus the block-00 Vulkan and block-03 HIP
-hunks).  (The block-15 attention-memory campaign was
-temporarily staged as a 15th patch and then un-promoted; it lives only in
-`beta/block-15-campaign-wins/`.)  Older fork states are
+hunks).  (The block-15 attention-memory campaign was temporarily staged as
+a 15th patch, un-promoted, and then **promoted to `patches/0015` on
+2026-09-12**; the canonical rebuild re-ran strict **16/16** `git am`, applied
+tree `c3142fe0b3` == canonical, tip `0f4f83f9e`.)  Older fork states are
 preserved on the `stew675/llama.cpp` fork remote (`rdna-boosts` =
 previous tip `482837e5a` on `0eadefebd`; `rdna-boosts-orig`, …) and in
 older local reference clones — never rely on them for the current
@@ -301,13 +307,13 @@ explicitly requests it.**
 | `MANIFESTS.md` | apply order, per-block verification, validation history |
 | `BASELINE.md` | fork point, patch provenance, drift policy |
 | `GREEDY-PURITY.md` | the purity rulebook (index + invariants + per-finding claims; read before shipping) — its dated narratives/evidence for the closed cases are in `archive/docs/GREEDY-PURITY-FINDINGS.md` under the same `§` numbers |
-| `patches/` | **the delivery set** (0000-0014: block 00 + blocks 01-14) + apply README |
-| `scripts/apply-all.sh` | the verified apply flow (`git am` block 00 + blocks 01-14, automatic `git am -3` fallback on a drifted base) |
+| `patches/` | **the delivery set** (0000-0015: block 00 + blocks 01-15) + apply README |
+| `scripts/apply-all.sh` | the verified apply flow (`git am` block 00 + blocks 01-15, automatic `git am -3` fallback on a drifted base) |
 | `scripts/make-patches.sh` | regenerates the set from the fork |
-| `rdna-boosts-all.patch` | the entire 15-patch net as ONE patch (fork point only) |
+| `rdna-boosts-all.patch` | the entire 16-patch net as ONE patch (fork point only) |
 | `benchmarks/` | dated benchy/v1/v2 records + methodology + graphs; **`mtp-adaptive-methodology.md` = the adaptive-MTP baseline gate** (run before shipping any decode/fusion change) |
 | `wip/` | exploration docs, tuning tools, session handoffs — **NOT part of the delivery** (see the WIP rule below) |
-| `beta/` | **promoted-from-WIP staging** (e.g. `beta/qwen4exp/` = qwen4exp support + its validation record; `qwen4exp-support.patch` promoted into the delivery as block 14).  `beta/block-15-campaign-wins/` is the beta record for **Block 15** (staged 2026-09-10, **NOT a delivery patch**; it lives only in `beta/block-15-campaign-wins/block-15-campaign-wins.patch`): its README is the promotion/gate record and `BETA-TESTING.md` the tester checklist — see the WIP rule below |
+| `beta/` | **promoted-from-WIP staging** (e.g. `beta/qwen4exp/` = qwen4exp support + its validation record; `qwen4exp-support.patch` promoted into the delivery as block 14; `beta/block-15-campaign-wins/` = the attention-memory campaign record, its patch **promoted into the delivery as block 15 on 2026-09-12**): each README is the promotion/gate record and `BETA-TESTING.md` the tester checklist — see the WIP rule below |
 | `upstream/` | **upstream-PR candidates** — self-contained changes that could be filed against unadulterated `ggml-org/llama.cpp` master, each with a `UPSTREAM-PR-*.md` note + `.patch` (see its README for the double-apply caution and the status table) |
 | `archive/docs/` | moved-out historical records (validation history, baseline history) — reference only |
 | `archive/work/` | closed experiments, preserved for future re-evaluation |
@@ -338,7 +344,7 @@ Consequences, so it is not re-litigated:
 
 ## Critical facts (do not re-derive)
 
-- **Apply method:** all 15 blocks with **`git am`** (each block is a
+- **Apply method:** all 16 blocks with **`git am`** (each block is a
   committed fork commit, exported with `git format-patch`; block 12 is a
   regular commit like the rest, no special `git apply` step).
   Plain `git apply` of the concatenated series **silently drops
@@ -557,7 +563,7 @@ Consequences, so it is not re-litigated:
   go-ahead after a ~4–5 day beta window.  Anything that is also applicable to
   unadulterated upstream `ggml-org/llama.cpp` gets a copy under `upstream/`
   (as `UPSTREAM-PR-<slug>.md` + `.patch`) so it can be filed as a PR.
-- **Block 15 is the memory campaign (staged in `beta/block-15-campaign-wins/`, NOT a delivery patch).**
+- **Block 15 is the memory campaign (`patches/0015` since the 2026-09-12 promotion; formerly staged in `beta/block-15-campaign-wins/`).**
   Its wins are **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`),
   **W2** derived QSA per-block bias + visibility (`GGML_QSA_DERIVED_BIAS`,
   `GGML_QSA_DERIVED_VIS`), **W3** keys-only QSA indexer cache
@@ -669,16 +675,16 @@ AR backend is then never reached.
 ### Regenerate the patches (after fork changes)
 
 `scripts/make-patches.sh` (defaults: fork `~/llama.cpp`, base `9113cc188`,
-blocks tip `d306d4b4b`): `git format-patch --start-number 0` the block
-commits (all 15 blocks are committed fork commits; block 00 keeps the file
+blocks tip `0f4f83f9e`): `git format-patch --start-number 0` the block
+commits (all 16 blocks are committed fork commits; block 00 keeps the file
 prefix `0000`; `git diff <base>..<tip>` yields
 `rdna-boosts-all.patch`).  NOTE on the fork topology: **the working
 `~/llama.cpp` checkout's `rdna-boosts` branch is NOT the canonical chain**
 — it may be rebased onto a master two commits newer
 than the fork point (`f3f1a8f27`, `304665fe7`), so a raw
 `9113cc188..HEAD` range there exports those two upstream commits as patches
-0001/0002.  The canonical 15-block chain is a rebuild of the delivery set at
-`9113cc188` (tip `d306d4b4b`), which is what the default tip names.  Always regenerate from a
+0001/0002.  The canonical 16-block chain is a rebuild of the delivery set at
+`9113cc188` (tip `0f4f83f9e`), which is what the default tip names.  Always regenerate from a
 canonical fork rebuilt AT `9113cc188`; a rebuilt fork produces its own
 commit SHAs, so patch bodies stay identical but the `From <sha>` line and
 the `[PATCH NN/15]` series count change.  Then

@@ -1,7 +1,7 @@
-From 1cc48d58112f18137f845d0ee1f53c84f368792f Mon Sep 17 00:00:00 2001
+From c9b9020bddf98984c13e55c799fe82323a09311f Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 08:14:24 -0500
-Subject: [PATCH 06/14] rdna-boosts: block 06: host-buffer revert for discrete
+Subject: [PATCH 06/15] rdna-boosts: block 06: host-buffer revert for discrete
  GPUs
 
 On the 050dde50c baseline this block reverted PR #24233 (restore

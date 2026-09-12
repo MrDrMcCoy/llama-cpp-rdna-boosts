@@ -1,7 +1,7 @@
-From c65afa72fb7aba117125984c099422c69729905e Mon Sep 17 00:00:00 2001
+From 6a3e766c4a922a8966f610cb877aebb893fbcb45 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 08:14:24 -0500
-Subject: [PATCH 10/14] rdna-boosts: block 10: k-quant-boosts -
+Subject: [PATCH 10/15] rdna-boosts: block 10: k-quant-boosts -
  Q4_K/Q5_K/Q6_K/Q8_0 mmvq VDR
 
 ---

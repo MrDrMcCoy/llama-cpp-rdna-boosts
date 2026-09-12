@@ -6,10 +6,9 @@ keeps closed work as a one-liner with a pointer to the dated record.  Details ne
 live in `AGENTS.md`, `patches/README.md`, `MANIFESTS.md`, `WORKLOG.md`, `GREEDY-PURITY.md`, `beta/*`,
 `wip/*` and `benchmarks/`.
 
-**Current state (2026-09-12):** the delivery is the 15-patch set against fork point `9113cc188`
-(block 00 + blocks 01-14), canonical tip **`d306d4b4b194738dd5baad89ef77fa31a931e8ff`** (tree `3b0874b6aa367fea846a437b45f1689bd173b38c`),
-`make-patches.sh` default tip = `d306d4b4b194738dd5baad89ef77fa31a931e8ff`.  Block 15 (the attention-memory campaign) is **staged in
-`beta/block-15-campaign-wins/`, not promoted** (17th re-cut: `d306d4b4b` → `f399b1349`).  F1/F2/F3 (the
+**Current state (2026-09-12):** the delivery is the **16-patch set** against fork point `9113cc188`
+(block 00 + blocks 01-15), canonical 16-block tip **`0f4f83f9ef01ffd1662f58d714d62b9155325a62`** (tree `c3142fe0b311757f458647f172f623859f5bc983`),
+`make-patches.sh` default tip = `0f4f83f9ef01ffd1662f58d714d62b9155325a62`.  Block 15 (the attention-memory campaign) was **promoted to the delivery** as `patches/0015` (2026-09-12; TODO item 1 closed).  F1/F2/F3 (the
 KV-quant purity/parity campaign) are **all closed** — every KV cache type the delivery supports is
 width-pure and takes the f16 attention path — and so is the gfx1151 within-band mmvq fusion variance
 (block-13 amendment, 2026-09-12; see Closed).  The QSA *sparse* regime was re-measured on gfx1151
@@ -57,36 +56,6 @@ the device-query arm gate replacing the mirrored type list — so **Active is no
   `tools/qperf.sh` for the interleaved per-type table.  Analysis: `GREEDY-PURITY.md` §22.
 
 ## Waiting on others (not actionable in this repo)
-
-### 1. Block 15 promotion — **UNBLOCKED** (waiting on the beta window + the maintainer's go-ahead)
-- **Live state:** the 17th re-cut is on the current base (`d306d4b4b` → beta tip **`f399b1349`**, tree
-  **`c3142fe0b311757f458647f172f623859f5bc983`**); it builds clean, applies strict `git am` (round-tripped,
-  applied tree == the beta worktree tree), and
-  revalidates (the four gate combos + `draft-mtp n_max 3` all `0fc4910d5824`, `FLASH_ATTN_QSA` 22/22 +
-  `GATED_DELTA_NET` 46/46 + `test-recurrent-state-rollback` PASS).  The dense-arm blocker and its fix are closed — see the
-  Closed section; the cut is in `beta/block-15-campaign-wins/` (BETA-TESTING.md 12th-re-cut section).
-- **Now gating the promotion:** only the ~4–5 day beta window + the maintainer's go-ahead.  Six wins, gates:
-  W1 `GGML_QSA_SCORE_MEM`, W2 `GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`, W3 `LLAMA_QSA_KEYS_ONLY`,
-  W4 (no gate; `ab/w4-revert.patch`), V3 `LLAMA_KQ_MASK_DERIVED`, V4+V5 `GGML_CUDA_FA_KV_NATIVE` (opt-in).
-  Tester material: `BETA-TESTING.md` — its gate list now includes the perplexity oracle
-  (`tools/qsa-ppl-oracle.sh`, which is what caught this) **and** the dense-arm text/random-text gates.
-- **Post-fix gates (all against the delivery build, identical configs):** oracle sparse `6.5394` / dense
-  `6.5377`; dense texts tensor f16 `2daa19579316`, tensor `iq4_nl` `3c46e47ab345`, layer f16
-  `e656b50f2cc8`, layer f16 `-fa off` `b96459bf02ca` (all == the delivery); random text `19.0589` /
-  `7.9682` (== the delivery); production arm untouched (sparse f16 `804de0576868`, q4_1 `886292b17a93`,
-  `plain == n_max 3 == n_max 7`, MTP f16 bit-identical `0.56028`/`(0.681, 0.553, 0.447)`,
-  `LLAMA_QSA_OFF=1` `6.5376`); KV reserves unchanged; backend suites OK.
-- **Accepted caveat (do not re-report):** W2's derived per-block bias is not bit-exact for `iq4_nl` — its
-  greedy text (`fcb2d47f94cf`) and MTP acceptance (`0.46203` / pos-1 `(0.717, 0.434, 0.226)`) differ from
-  the delivery's while the sparse-arm PPL is identical (`6.5244`), and `GGML_QSA_DERIVED_*=0` restores the
-  delivery's values exactly; the last ULP flips an indexer top-k boundary.  See `BETA-TESTING.md` §4d.
-- **Optional follow-up (would make V5 free, not needed for the opt-in delivery):** the native-bf16 loss
-  is not the conversion (native staging measures within 0.2 % of an f16 cache) but the removed F16
-  scratch, which was a *dense, normalised* copy of the cache view (for a 4-KV-head model `nb[1]` is 4×
-  the row size — the GQA heads are interleaved), while the native path re-reads that interleaved view on
-  every staging pass.  Options: (a) restrict the arm to `nb[1] == ne[0]*2` layouts (1 line, then free
-  there), (b) make the native staging read densely, (c) make the KV cache non-interleaved (llama.cpp-wide).
-  Design: `wip/arch-independent-memory/BF16-NATIVE-KV-PLAN.md` §9.
 
 ### 6. Cross-arch / gfx1100 validation (the gfx1201 port + its Phase 2.5 probe are DONE — see Closed)
 - **Still open, needs other hardware:**
@@ -174,6 +143,20 @@ the device-query arm gate replacing the mirrored type list — so **Active is no
   `wip/qwen4exp/LRU_EXPERTS.md`, `PHASE0_ROUTING.md`, `HANDOVER-2026-09-04-tiering.md`.
 
 ## Closed (one-liners; details in the dated docs)
+
+- **Block 15 promoted to the delivery (TODO item 1, closed 2026-09-12).**  The attention-memory campaign
+  was promoted from `beta/block-15-campaign-wins/` to `patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch`;
+  the delivery is now a **16-patch set** (block 00 + blocks 01-15) with `scripts/apply-all.sh` /
+  `make-patches.sh` as 16-block flows.  Canonical 16-block tip **`0f4f83f9ef01ffd1662f58d714d62b9155325a62`**,
+  net tree **`c3142fe0b311757f458647f172f623859f5bc983`**; strict **16/16** `git am` on a fresh worktree at
+  `9113cc188`, zero whitespace warnings, applied tree == the re-validated beta tree.  The promoted patch is
+  byte-identical to the beta patch apart from its `From <sha>` line, and blocks `0000`-`0014` are
+  byte-identical to the previous delivery apart from the `From` lines + the `[PATCH NN/14]` -> `[PATCH NN/15]`
+  series denominator.  The seven wins keep their gates (V4/V5 behind `GGML_CUDA_FA_KV_NATIVE`, opt-in default
+  0); the revalidation reproduced every reserve number to the last decimal and the width-probe reference
+  hashes, with byte-identical coherence across gates and the MTP gate unchanged (`draft-mtp` acceptance must
+  stay > ~0.45).  The W2-`iq4_nl` ULP caveat is accepted and recorded.  See `patches/README.md` (the
+  block-15 promotion section), `WORKLOG.md` and `beta/block-15-campaign-wins/README.md` (PROMOTED).
 
 - **QSA sparse-regime width purity (TODO item 4, closed 2026-09-12 (12); sub-item (b) re-opened and root-caused/fixed 2026-09-12 (13), block-14 amendment (eighth); gfx1151 cross-check validated 2026-09-12 (14)).**  Sub-item (a), the `embeddings_nextn` MTP-export last-layer gather deferral, is fixed — the last layer always gathers its output rows and builds a separate full-row tail for `t_h_nextn` — so the prefill logits are bit-identical to `--spec-type none` (`mstep NEXTN=1` 0 mismatches, was 1 at `pos = 4293`).  Sub-item (b) was a **width dependence** (the QSA indexer score's flattened `ne11 = 4 * n_tps` crossed `MMVF_MAX_BATCH_SIZE` at `n_tps = 3`, putting the verify batch on MMF while decode stayed on MMVF); the eighth amendment keeps the whole flattened band on the decode family, so `W = 1..8` is bit-identical with the W=1 `Thash` unchanged.  **gfx1151 cross-check (item 17, closed 2026-09-12 (14)):** the recorded forced-sparse `plain != draft-mtp` text residual is gone (`a57bc13bbf2a` both, was n3 `3124adfd2b94`; first diff char 458 pre-fix), all eight native KV types (f16/bf16/q8_0/q4_0/q4_1/q5_0/q5_1/iq4_nl) are pure at n_max 1/2/3/5/7, and the mstep `W = 1,2,3,4,5,8` matrix is 0 mismatches (only q8_0/q5_0 were ever impure pre-fix).  See `WORKLOG.md` 2026-09-12 (12)/(13)/(14) and `patches/README.md`.
 
@@ -380,5 +363,5 @@ dense texts and random-text PPL byte-identical to the delivery, production arm u
   `AGENTS.md` headers.
 - Purity/invariant analysis and the instrument rules: `GREEDY-PURITY.md`.
 - Benchmarks + gates: `benchmarks/` (the adaptive-MTP baseline gate: `mtp-adaptive-methodology.md`).
-- Memory campaign (wins, V3/V4 plans, Block 15 staging): `beta/block-15-campaign-wins/HANDOVER.md`,
+- Memory campaign (wins, V3/V4 plans, Block 15 record — now promoted to `patches/0015`): `beta/block-15-campaign-wins/HANDOVER.md`,
   `README.md`, `BETA-TESTING.md`; upstream PR candidates: `upstream/README.md`.

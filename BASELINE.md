@@ -1,7 +1,7 @@
 # BASELINE - provenance and drift policy
 
-Current state: `main` is the delivery branch carrying the **15-patch set**
-(block 00 + blocks 01-14) generated against the fork
+Current state: `main` is the delivery branch carrying the **16-patch set**
+(block 00 + blocks 01-15) generated against the fork
 point **llama.cpp master `9113cc188`** (re-based 2026-09-08 from
 `050dde50c`, itself re-based 2026-09-07 from `465e49b9c`, itself
 re-based 2026-09-06 from `9cffdcc80`, itself re-based
@@ -24,16 +24,16 @@ at `192067b72`), `baseline/d222767c7` (validated against `d222767c7`) and
 ## Baseline (current delivery)
 
 
-All 15 patches are generated against **llama.cpp upstream master at
+All 16 patches are generated against **llama.cpp upstream master at
 `9113cc188`** (re-based 2026-09-08 from `050dde50c`, itself re-based
 2026-09-07 from `465e49b9c`, itself re-based
 2026-09-06 from `9cffdcc80`, itself re-based
 2026-09-02 from `0eadefebd`; dated records at the
 bottom of this file): block 00 = the structural/architecture fixes added
 2026-09-10 (FA small-batch KV-split width invariance + Vulkan masked-V), and
-blocks 01-14 = the fork's `rdna-boosts` block
-commits on `9113cc188` (the canonical 15-block tip is block 14
-`c6f1e8e78`, 2026-09-12 (13) block 14's QSA indexer-score decode/verify band-uniformity fix -> `d306d4b4b`; block 02 amended 2026-09-11 with the
+blocks 01-15 = the fork's `rdna-boosts` block
+commits on `9113cc188` (the canonical 16-block tip is block 15
+`0f4f83f9e`, promoted 2026-09-12 from `beta/block-15-campaign-wins/`, on top of the 2026-09-12 (13) block-14 QSA indexer-score decode/verify band-uniformity fix -> `d306d4b4b`; block 02 amended 2026-09-11 with the
 K-independent whole-batch chunked GDN prefill and again 2026-09-12 with the rollback-bounded
 chunked threshold (`n_rs_batch`, long-draft speculators) + the pre-batch snapshot slots (free; the
 `GGML_CUDA_GDN_ALIGN_BOUNDARY` gate and its K-dependent branches removed; +
@@ -44,9 +44,8 @@ new vec instances, `dequantize_q4_nl`, the non-contiguous converters), and block
 2026-09-12 with the RDNA3_5 single-token-only mmvq fusion skip, and block 14
 amended 2026-09-11 with the hyper-connection decode/verify band fix, the QSA decode arm, the QSA
 quantized-KV enablement + K/V-head chunking fix and the `iq4_nl` QSA/CPU-oracle/test entries;
-**block 15, the attention-memory campaign, is NOT part of the
-delivery** -- it is staged in `beta/block-15-campaign-wins/` and applied
-manually, see `patches/README.md` and `WORKLOG.md`); the reference `~/llama.cpp`
+**block 15, the attention-memory campaign, is the last delivery patch** -- promoted 2026-09-12 from `beta/block-15-campaign-wins/`,
+see `patches/README.md` and `WORKLOG.md`); the reference `~/llama.cpp`
 `rdna-boosts` branch is *disposable* and had at cut time drifted two
 upstream master commits past the fork point — `f3f1a8f27` (iGPU lazy-
 load default) and `304665fe7` (SYCL IQ-type-for-MoE), both dated after
@@ -54,7 +53,7 @@ load default) and `304665fe7` (SYCL IQ-type-for-MoE), both dated after
 wrongly export those two upstream commits as patches 0001/0002.
 **Always regenerate from a canonical fork rebuilt at `9113cc188` via
 `scripts/apply-all.sh`** (that is what `make-patches.sh`'s default tip
-`13af95ac1` refers to).  The two commits' content is 106 lines in 3 files
+`0f4f83f9e` refers to).  The two commits' content is 106 lines in 3 files
 (`ggml/src/ggml-sycl/mmvq.cpp`, `ggml/src/ggml-sycl/vecdotq.hpp`,
 `src/llama-model.cpp`) and is deliberately **not** in the delivery — it
 is upstream code past the recorded fork point; it does not touch any
@@ -146,9 +145,9 @@ validation:
 
 ## Per-block provenance
 
-The CURRENT delivery patches (0000-0014) are the fork's `rdna-boosts` block
+The CURRENT delivery patches (0000-0015) are the fork's `rdna-boosts` block
 commits exported with `git format-patch` (one commit per block; the
-current 15-block set against `9113cc188`:
+current 16-block set against `9113cc188`:
 block 00 = the structural/architecture fixes added 2026-09-10 (FA
 small-batch KV-split width invariance for issue #25 + Vulkan masked-V);
 blocks 01-13 = the `7c4d9c4e0`-based series (block 01 refreshed 2026-09-09 to the llama.cpp
@@ -187,9 +186,9 @@ to apply against a newer upstream master:
    master and continue.
 3. Do NOT hand-edit the committed patches as the permanent fix: when more
    than one block needs manual re-base hunks, regenerate the whole set from
-   the fork with `scripts/make-patches.sh` (re-exports blocks 00-14 from
+   the fork with `scripts/make-patches.sh` (re-exports blocks 00-15 from
    `9113cc188..<blocks-tip>`; defaults target
-the current 15-block tip `d306d4b4b`), then re-verify the clean-apply
+the current 16-block tip `0f4f83f9e`), then re-verify the clean-apply
 simulation (fresh worktree at the new fork point, `scripts/apply-all.sh`,
 build, coherence) and update the fork point + verification numbers in
 `patches/README.md` and `README.md`.

@@ -1,7 +1,7 @@
-From 11345b71ef9e289b216d7fc544bf2c9dbc296fed Mon Sep 17 00:00:00 2001
+From 58be8391230f241b112ca20510ad715cd645ca65 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 08:14:24 -0500
-Subject: [PATCH 02/14] rdna-boosts: block 02: fused chunked gated-delta-net
+Subject: [PATCH 02/15] rdna-boosts: block 02: fused chunked gated-delta-net
  prefill kernel
 
 ---

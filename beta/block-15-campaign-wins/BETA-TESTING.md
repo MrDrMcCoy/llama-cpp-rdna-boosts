@@ -4,13 +4,13 @@ For beta testers with a machine that can build the Block-15 tree.  Purpose: conf
 memory wins on *your* models and hardware, and — if something looks wrong — isolate it to a single win
 without rebuilding five times.  Every win except W4 is switchable by environment variable.
 
-> **Status: OPEN — the beta window started 2026-09-10; re-cut and re-validated 2026-09-11.**
-> Block 15 is **staged in this directory**
-> (`block-15-campaign-wins.patch`), **NOT in the delivery** (the delivery is the 15-patch set:
-> block 00 + blocks 01-14), and every row below was re-checked **as a combination** on the tree built
-> from the beta patch on top of the delivered **15-block** set (fresh worktree at `9113cc188`, strict
-> **15/15** `git am` + the beta patch, fresh build): reserves, byte-identical coherence on all five
-> models, the MTP gate, and the op suites all reproduce.  The current re-cut is tip **`f399b1349`**
+> **Status: PROMOTED to the delivery 2026-09-12 (beta window closed).**  Block 15 is now
+> `patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch` (the delivery is the **16-patch
+> set**: block 00 + blocks 01-15, applied by the updated `scripts/apply-all.sh`), and every row below
+> was re-checked **as a combination** on the pre-promotion tree built from the beta patch on top of
+> the delivered **15-block** set (fresh worktree at `9113cc188`, strict **15/15** `git am` + the beta
+> patch, fresh build): reserves, byte-identical coherence on all five models, the MTP gate, and the op
+> suites all reproduce.  The last beta re-cut is tip **`f399b1349`**
 > (base `d306d4b4b`, tree `c3142fe0b311757f458647f172f623859f5bc983`) and every recorded number carries forward — see the dated
 > re-cut log below, `README.md` and `HANDOVER.md` §10.  (Earlier tip `eb15f3ee1`, base `47a9d4d86`,
 > tree `ffa3a11c3`.)

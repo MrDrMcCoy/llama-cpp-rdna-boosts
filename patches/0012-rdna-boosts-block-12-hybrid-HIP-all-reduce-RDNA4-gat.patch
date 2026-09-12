@@ -1,7 +1,7 @@
-From 07d10c10462f18710dbbdc66f727b1e770dee260 Mon Sep 17 00:00:00 2001
+From d94a1aea6828103ca3f52bd78b6d12164077bb6f Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 1 Sep 2026 03:54:07 -0500
-Subject: [PATCH 12/14] rdna-boosts: block 12: hybrid HIP all-reduce
+Subject: [PATCH 12/15] rdna-boosts: block 12: hybrid HIP all-reduce
  (RDNA4-gated)
 
 Amended 2026-09-04 (stew675/llama-cpp-rdna-boosts issue #13, reporter

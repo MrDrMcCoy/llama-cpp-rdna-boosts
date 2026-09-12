@@ -1,5 +1,40 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (15) — block 15 promoted to the delivery (TODO item 1 closed)
+
+The attention-memory campaign (block 15) was **promoted from `beta/block-15-campaign-wins/` to the
+delivery**.  The beta window closed with the maintainer's go-ahead; the beta patch is now
+`patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch`, so the delivery is a **16-patch set**
+(block 00 + blocks 01-15) and `scripts/apply-all.sh` / `scripts/make-patches.sh` are 16-block flows
+(the old "beta patch applied manually on top of the 15-block tree" flow is gone).
+
+* **Clean-apply**: a canonical fork rebuilt at `9113cc188` from the current `patches/`
+  (`scripts/apply-all.sh`, strictly) produced tree `3b0874b6aa367fea846a437b45f1689bd173b38c`; the
+  promoted block-15 patch applied on top with strict `git am` (no `-3`), producing the re-validated
+  beta tree **`c3142fe0b311757f458647f172f623859f5bc983`** and canonical 16-block tip
+  **`0f4f83f9ef01ffd1662f58d714d62b9155325a62`**.  A fresh worktree at `9113cc188` + the updated
+  `apply-all.sh` then applied strict **16/16** `git am`, zero whitespace warnings, applied tree ==
+  `c3142fe0b3`.
+* **Patch identity**: `patches/0015` is byte-identical to the beta patch except its `From <sha>` line;
+  blocks `0000`-`0014` were regenerated from the canonical rebuild and are byte-identical to the
+  previous delivery apart from the `From` lines and the `[PATCH NN/14]` -> `[PATCH NN/15]` series
+  denominator (block 13's hand-carried 2026-09-12 RDNA3_5 amendment paragraph is preserved verifiably
+  — it is dropped by `git am`'s scissors handling, so it is re-added to the patch body as before).
+* **`rdna-boosts-all.patch`** regenerated as `git diff 9113cc188..0f4f83f9e` (127 files).
+* **The seven wins and their gates are unchanged** (W4 has no gate; V4/V5 share the opt-in
+  `GGML_CUDA_FA_KV_NATIVE`, default 0).  The revalidation that the promotion rests on reproduced every
+  reserve number to the last decimal, the width-probe reference hashes (1 GPU `4089b4d4`, 2-GPU tensor
+  `a4817ee6`, 3-GPU tensor `91434ea9`; `W=9` divergent as accepted), byte-identical same-seed coherence
+  across gates on 4B / gemma-4-E4B (ISWA) / gemma-4-31B (ISWA) / 27B (short + 40k) / qwen4exp, the op
+  suites (`FLASH_ATTN_EXT` 7859/7859 ROCm0 + CPU, `GATED_DELTA_NET` 46/46, `FLASH_ATTN_QSA` 22/22),
+  the unchanged MTP gate (27B `0.76744`, qwen4exp `0.44262`), and the W4 round trip 56.00 -> 16.00 MiB.
+  The accepted W2-`iq4_nl` ULP caveat is recorded in `beta/block-15-campaign-wins/BETA-TESTING.md` §4d.
+* **Docs**: `patches/README.md` (the 0015 row + the promotion section), `README.md`, `MANIFESTS.md`,
+  `BASELINE.md`, `AGENTS.md`, `TODO.md` (item 1 moved to Closed) and the beta README (marked
+  **PROMOTED**) all moved to the 16-patch state.  The block-15 gate table, the per-win mechanism notes
+  and the gfx1151 pass stay in `beta/block-15-campaign-wins/README.md`;
+  `wip/strix-halo/GATE-2026-09-10-block15-rdna35.md` is the gfx1151 record.
+
 ## 2026-09-12 (14) — gfx1151 cross-check of the block-14 (eighth) fix: TODO item 4 fully closed
 
 TODO item 17 (the gfx1151 cross-check) is resolved and item 4 is fully closed.  Validated on gfx1151

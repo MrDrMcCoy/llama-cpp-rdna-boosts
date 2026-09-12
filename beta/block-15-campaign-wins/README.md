@@ -4,14 +4,18 @@
 > 2026-09-10, the merge/gate/validate/cut steps, the state inventory and the open questions.
 > This file is the reference: inventory, gate audit, validation protocol, reference numbers.
 
-**Status: BETA — staged, NOT promoted (2026-09-10); REVALIDATED 2026-09-11
-against the 15-patch delivery.**  The campaign is
-complete and the block-15 patch lives **only in this directory**
-(`block-15-campaign-wins.patch`, re-cut 2026-09-12 (13) on base `d306d4b4b`, beta tip `f399b1349`); it is **not part of the
-delivery** (`patches/` is the 15-patch set: block 00 + blocks 01-14) and is
-applied manually on top of the 15-block tree.  The beta window (~4–5 days) is open for tester feedback;
-promotion into the delivery set requires the maintainer's go-ahead (at
-which point `scripts/apply-all.sh` becomes a 15-block flow).  All seven wins are on by default
+**Status: PROMOTED to the delivery (2026-09-12).**  The campaign is
+complete and the block-15 patch is now
+`patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch` in the
+delivery (**16-patch set**: block 00 + blocks 01-15), applied by the updated
+`scripts/apply-all.sh` / `scripts/make-patches.sh` with `git am` like every
+other block — the old "beta patch applied manually on top of the 15-block
+tree" flow is gone.  The promoted patch is byte-identical to the beta copy
+here (`block-15-campaign-wins.patch`, the last beta cut: 2026-09-12 (13) on
+base `d306d4b4b`, beta tip `f399b1349`) except its `From <sha>` line; the
+canonical promoted chain is tip `0f4f83f9e`, tree
+`c3142fe0b311757f458647f172f623859f5bc983`, strict **16/16** `git am`.
+This file stays as the promotion/gate record.  All seven wins are on by default
 except **V4 and V5, which are opt-in through the same switch**
 (`GGML_CUDA_FA_KV_NATIVE=1`; see the gate table below) — the policy
 exception the maintainer approved on 2026-09-10 (a sub-2 % prefill loss

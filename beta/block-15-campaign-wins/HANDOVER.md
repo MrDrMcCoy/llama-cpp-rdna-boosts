@@ -1,5 +1,12 @@
 # Block 0015 handover — campaign wins → beta delivery (+ upstream candidates)
 
+> **PROMOTED to the delivery 2026-09-12.**  Block 15 is now
+> `patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch` (delivery =
+> 16 patches, block 00 + blocks 01-15; `scripts/apply-all.sh` applies it).
+> The beta window is closed and the staging/procedure notes below are the
+> historical record; the promotion validation is in the beta `README.md`
+> (PROMOTED) and the 2026-09-12 WORKLOG entry.
+
 > **REVALIDATED 2026-09-11 — see §10.6 for the outcome.**  The beta patch was cut on
 > `b425aa8f7` (the 14-block chain) and has been **re-cut against canonical tip `389c5341f`
 > (tree `928852cdc`) and re-validated end to end**: new beta tip **`fe4f55278`**
