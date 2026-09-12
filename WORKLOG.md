@@ -12,8 +12,10 @@ applied tree **`3b0874b6aa367fea846a437b45f1689bd173b38c`** (== canonical).
   `3124adfd2b94` (first diff **char 458**); post-fix `plain == n3 == a57bc13bbf2a` (632 chars).  All
   eight native KV types are pure in the forced-sparse regime (f16 `cb2912b186b9`, bf16 `945f89766e3c`,
   q8_0 `a57bc13bbf2a`, q4_0 `9afd1d55a5ae`, q4_1 `aff1978cf720`, q5_0 `296f8ebcd246`, q5_1
-  `a88803f4ebf9`, iq4_nl `8e4437794660`); pre-fix only q8_0 and q5_0 were impure, and n_max 1/2/3/5/7 is
-  pure for both.  Default (dense) gates unchanged: q8_0 `e8f8bba3942b` (626), f16 `0fc4910d5824` (632).
+  `a88803f4ebf9`, iq4_nl `8e4437794660`); pre-fix only q8_0 and q5_0 were impure.  **The full
+  n_max 1/2/3/5/7 sweep is pure for all eight native KV types in *both* the forced-sparse and the
+  default (dense) regimes.**  Default (dense) gates unchanged: q8_0 `e8f8bba3942b` (626), f16
+  `0fc4910d5824` (632).
 * **The `mstep` matrix is 0 mismatches at every width**: `W = 1,2,3,4,5,8` (forced-sparse q8_0) all PURE
   with a stable `Thash = ea713a1c1f515bc1`, **unchanged vs the pre-fix build**.  (gfx1151's mstep was
   already pure at default params pre-fix, unlike gfx1201's W=2/W>=3 boundary, so the text gate is the
