@@ -175,3 +175,22 @@ per kernel, not across kernels.**
   section), `WORKLOG.md` (2026-09-12 (16)), `MANIFESTS.md`, `AGENTS.md`,
   `benchmarks/mtp-adaptive-methodology.md` (new rule 5: stock-relative verify-width
   `llama-batched-bench -npl 1,4,8` gate).
+
+---
+
+## OUTCOME (2026-09-12 (17)) — premise corrected
+
+The per-kernel VDR was implemented as described (dense selectors upstream, `mul_mat_vec_q_moe`
+VDR=4) and shipped in delivery commit **`6bb8ee3`** (canonical tip `a05225f73`, tree
+`2833f1369bdea4cb45f68f85dbb2898fd98aab66`).  It keeps the dense fix and recovers the MoE **B=8**
+expert win (`llama-batched-bench` 1.506 -> 1.452 s, better than the pre-(16) 1.494).  But **the
+larger MoE single-token/MTP loss is NOT the VDR — it is the band-uniform `nwarps = 1` on the dense
+layers.**  A diagnostic restoring the pre-(16) per-type `nwarps = 8` (RDNA4) recovers MoE B=1
+0.783 -> 0.716 s and MoE MTP 161 -> 167 t/s, but costs dense MTP (35.9 -> 34.3 t/s at `n_max 7`)
+and MoE B=8 (1.452 -> 1.499); the same Q8_0 weight type is in both models' decode paths, so no
+per-type split satisfies both.  `nwarps = 1` is kept (the (16) dense verify fix requires it) and
+the residual MoE single-token/MTP delta is a **documented trade**.
+
+So the §2/§4 expectations in this handover (MoE B=1 ≈ 0.71, MTP ≈ 166) were based on the wrong
+attribution; the per-kernel VDR cannot reach them.  Full numbers: the 2026-09-12 (17) entry in
+`WORKLOG.md` and the (17) section in `patches/README.md`.
