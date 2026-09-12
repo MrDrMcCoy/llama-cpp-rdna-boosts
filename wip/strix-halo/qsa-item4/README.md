@@ -36,10 +36,10 @@ deep dive) and `../RECORD-2026-09-12-qsa-sparse-width.md` (the earlier dispositi
 | `nmax.sh` | the `n_max 1/2/3/5/7` sweep + first-divergence offsets. |
 | `p5000.txt` | the 4293-token prompt both scripts default to. |
 
-Build (from a built llama.cpp tree, e.g. `/home/stew675/ll25/verify`):
+Build (from any built llama.cpp tree, e.g. one made by applying `patches/` at `9113cc188`):
 
 ```sh
-cd /home/stew675/ll25/verify
+cd <built llama.cpp tree>
 export LD_LIBRARY_PATH=/opt/rocm-7.14-gfx1151/lib:$LD_LIBRARY_PATH HIP_VISIBLE_DEVICES=0
 clang++ -O2 -std=c++17 -I include -I ggml/include -I src \
   /home/stew675/llama-cpp-rdna-boosts/wip/strix-halo/qsa-item4/mstep.cpp -o /tmp/mstep \
