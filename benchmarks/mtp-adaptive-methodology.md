@@ -34,6 +34,25 @@ draft acceptance collapsed to 0/1527 (draft-mtp ~53 t/s vs plain ~90, where
 MTP should accelerate). Dense models and single-token MoE decode were
 unaffected, so every existing gate passed.
 
+The 2026-09-12 issue-#30 regression is a second worked example of a different class:
+the patch set made the mmvq knobs **band-uniform** (a purity requirement -- `nwarps` and
+VDR both participate in the K-split accumulation order, so decode and the verify batch
+must agree) but left them at their **single-token-tuned** values, which cost up to +35% on
+the verify widths (dense Qwen3.8-27B UD-Q4_K_XL, `q8_0` KV, `llama-batched-bench` B=8
+2.929 s stock / 3.958 s delivery).  Acceptance stayed flat (0.484 vs 0.466), so the
+acceptance rule passed; `llama-bench tg128` passed (single token is the one width that
+did *not* regress); block 13's `pl=8` check was old-vs-new *within* the delivery.  Only a
+**stock-relative** batched decode at the verify widths exposed it.
+
+Gate addition (2026-09-12, rule 5): before shipping any decode/verify or mmvq change, run
+an interleaved stock-vs-new `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` with a
+quantized KV cache on a dense K-quant model and require the new build to be within noise
+of stock at B=1 and **no worse** at B=4/B=8.  The batched TG numbers are the instrument
+(they are acceptance-free); `draft-mtp` / `draft-mtp-adaptive` end-to-end throughput is
+the confirmation.  The amended verify path measured B=8 2.798 s vs stock 2.929 s; see the
+2026-09-12 (16) WORKLOG entry and the block-08 + block-10 amendment section in
+`../patches/README.md`.
+
 ## Protocols
 
 ### Protocol A — fast per-build gate (llama-cli, fixed seed)

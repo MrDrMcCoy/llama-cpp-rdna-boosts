@@ -47,6 +47,9 @@
 #                 LLAMA_QSA_KEYS_ONLY, W4 ggml-alloc unused-view release, V3
 #                 LLAMA_KQ_MASK_DERIVED, V4/V5 GGML_CUDA_FA_KV_NATIVE (opt-in);
 #                 promoted from beta/block-15-campaign-wins/).
+#                 And the 2026-09-12 (16) block-08 + block-10 amendment (issue #30):
+#                 the RDNA4 calc_nwarps table is band-uniform nwarps=1 and block 10's
+#                 VDR=4 mmvq boost is reverted (see patches/README.md).
 #                 The block-15 tip of the *working*
 #                 fork checkout (~/llama.cpp rdna-boosts) is a different SHA,
 #                 because that branch is a local rebuild -- do not use it for
@@ -66,7 +69,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORK="${1:-$REPO_DIR/../llama.cpp}"
 BASELINE="${2:-9113cc188}"
-TIP="${3:-0f4f83f9ef01ffd1662f58d714d62b9155325a62}"
+TIP="${3:-1837856e3f8120449090c0f44594427573a541ed}"
 PATCHES="$REPO_DIR/patches"
 
 if [ ! -e "$FORK/.git" ]; then

@@ -1,5 +1,59 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (16) — block-08 + block-10 amendment: the MTP decode regression (issue #30)
+
+Issue **#30** (briansp2020, single R9700 gfx1201, dense **Qwen3.8-27B UD-Q4_K_XL**, `q8_0` KV)
+reported the delivery ~14 % **slower** on MTP decode than stock `9113cc188` at the same fork point,
+with much faster prefill.  Reproduced on the maintainer rig (27B UD-Q4_K_XL, `q8_0` KV, 1 GPU): stock
+`--spec-type draft-mtp --spec-draft-n-max 8 --spec-draft-p-min 0.55` **37.51 t/s** vs the delivery
+**30.34 t/s**; plain decode was fine (delivery slightly faster).  Root cause, via
+`llama-batched-bench` (no speculation, so no acceptance confound) — the **multi-token verify path**
+was up to **+35 %** slower at B=8, and the penalty grew with width from B=3 on.  Two band-uniform
+mmvq knobs (made uniform by the 2026-09-11 MTP purity work, but left at their **single-token-tuned
+values**):
+
+* **block 10** — the `VDR=4` mmvq boost for Q4_K/Q5_K/Q6_K (the 32-element-per-call variants lose on
+the verify widths).  **Reverted in full** (`vecdotq.cuh` back to the upstream VDR set — Q4_K/Q5_K/Q6_K
+2/2/1, Q8_0 2); `vecdotq.cuh` drops out of the block.
+* **block 08** — the RDNA4 `calc_nwarps` per-type whitelist (`nwarps=8` for the simple-vec_dot types,
+only ever tuned at `ncols_dst == 1`).  The RDNA4 band is now **band-uniform `nwarps=1`**; RDNA3_0 and
+RDNA3_5 tables unchanged.
+
+**Result** (27B UD-Q4_K_XL, `q8_0` KV, 1 GPU; `llama-batched-bench` TG total for 32 steps):
+
+| build | plain | B=1 | B=4 | B=8 | MTP n_max 7 | acc | MTP n_max 3 | acc | MTP-adaptive n_max 7 | acc |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stock `9113cc188` | 28.25 | 1.157 | 1.726 | 2.929 | 37.51 | 0.484 | — | — | — (no adaptive) | — |
+| delivery (pre-amendment) | 29.34 | 1.147 | 2.121 | 3.958 | 30.34 | 0.466 | — | — | 30.57 | 0.4201 |
+| **amended** | 28.62 | 1.175 | 1.657 | **2.798** | **36.32** | 0.475 | **40.15** | 0.611 | **38.47** | 0.4226 |
+
+So the amended **verify path is faster than stock's** and the residual MTP difference is the
+single-token `nwarps=8` (B=1 1.175 vs 1.157) that the band-uniform purity constraint forbids, plus the
+`n_max 7` clamp.  The `nwarps` sweep (band-uniform 1/2/4/8 → B=8 2.790/2.894/3.162/3.307, MTP
+36.59/36.00/33.91/32.78) picks **1**; single-token is flat (1.160–1.175) and per-type mixing never
+helped.
+
+**Validation** (amended clean-apply build, `deliver-verify`):
+* **width probe** (`logits-dump-kv`, W=1..8): 4B **all 8 native KV types** PURE; 27B `q8_0`/`f16`/`bf16`
+  PURE.
+* **text gate** (`--spec-type none` == `draft-mtp n_max 3` == `n_max 7`), 27B, **all 8 native KV
+  types** byte-identical.
+* **MoE MTP gate** (35B-A3B Q4_K_M, 1 GPU, f16 KV): plain 84.3 → `draft-mtp n_max 3` **160.2 t/s**,
+  acceptance **0.87179** (unchanged).
+* **`test-backend-ops`**: ROCm0 **17999/17999** passed, 0 FAIL.
+* Same-seed coherence: coherent; the 4B reference re-baselines `f069f69475e7` → `3eeb3d9d333e`
+  (deliberate reduction-order change).
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated set, strict **16/16** `git am`, zero
+whitespace warnings, applied tree **`56a1c5f23c54c038f78d7242dc05b181d872b69b`** (canonical tip for
+this rebuild `1837856e3f8120449090c0f44594427573a541ed`).  Only blocks 0008 and 0010 change content;
+block 13's hand-carried 2026-09-12 RDNA3_5 amendment paragraph is re-added to the patch body (it is
+dropped by `git am` scissors handling).
+
+**Gate gap closed**: `../benchmarks/mtp-adaptive-methodology.md` gains a stock-relative
+verify-width `llama-batched-bench` check — the existing gate only tested acceptance at the default
+depth 3 and `llama-bench tg128` (the one width that never regressed).
+
 ## 2026-09-12 (15) — block 15 promoted to the delivery (TODO item 1 closed)
 
 The attention-memory campaign (block 15) was **promoted from `beta/block-15-campaign-wins/` to the

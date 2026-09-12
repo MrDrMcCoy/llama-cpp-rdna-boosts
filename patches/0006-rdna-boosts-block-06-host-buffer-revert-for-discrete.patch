@@ -1,4 +1,4 @@
-From c9b9020bddf98984c13e55c799fe82323a09311f Mon Sep 17 00:00:00 2001
+From 9f986ee718b66426bfbf44ef3ede69a1e8511d0d Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 08:14:24 -0500
 Subject: [PATCH 06/15] rdna-boosts: block 06: host-buffer revert for discrete

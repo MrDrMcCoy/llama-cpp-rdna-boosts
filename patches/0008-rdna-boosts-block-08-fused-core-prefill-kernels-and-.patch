@@ -1,4 +1,4 @@
-From bd7cf24bb5e3cbbb32fb57e9aa87b409d758b669 Mon Sep 17 00:00:00 2001
+From 06b72a9e2b82bc2023f3376edae6ba9c362289c3 Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Sat, 29 Aug 2026 08:14:24 -0500
 Subject: [PATCH 08/15] rdna-boosts: block 08: fused-core prefill kernels and
@@ -26,7 +26,7 @@ single-sequence case is unaffected.
  ggml/src/ggml-cuda/fattn-tile.cuh             |  16 +
  ggml/src/ggml-cuda/fattn.cu                   |  84 ++-
  ggml/src/ggml-cuda/ggml-cuda.cu               | 546 +++++++++++++-
- ggml/src/ggml-cuda/mmvq.cu                    | 670 ++++++++++++++++--
+ ggml/src/ggml-cuda/mmvq.cu                    | 690 ++++++++++++++++--
  ggml/src/ggml-cuda/mmvq.cuh                   |  23 +
  ggml/src/ggml-cuda/norm.cu                    | 215 ++++++
  ggml/src/ggml-cuda/norm.cuh                   |   7 +
@@ -50,7 +50,7 @@ single-sequence case is unaffected.
  ggml/src/ggml-cuda/unary.cuh                  |   6 +
  ggml/src/ggml-hip/CMakeLists.txt              |   6 +-
  ggml/src/ggml-musa/CMakeLists.txt             |   6 +-
- 32 files changed, 1948 insertions(+), 89 deletions(-)
+ 32 files changed, 1949 insertions(+), 108 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-vec-instance-bf16-iq4_nl.cu
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-vec-instance-f16-iq4_nl.cu
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-bf16.cu
@@ -1218,26 +1218,42 @@ index 6dd925267..6b4fe93df 100644
      bool cuda_graph_update_required = false;
      const void * graph_key = nullptr;
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 6305230b1..93bc4ac08 100644
+index 6305230b1..876b69875 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
-@@ -465,10 +465,13 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
+@@ -465,33 +465,21 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
          }
      }
      if (table_id == MMVQ_PARAMETERS_RDNA4) {
 -        // nwarps=8 benefits types with simple vec_dot on RDNA4 (ncols_dst=1).
-+        // nwarps=8 benefits types with simple vec_dot on RDNA4.
-         // Types with complex vec_dot (Q3_K, IQ2_*, IQ3_*) regress due to register
-         // pressure and lookup table contention at higher thread counts.
+-        // Types with complex vec_dot (Q3_K, IQ2_*, IQ3_*) regress due to register
+-        // pressure and lookup table contention at higher thread counts.
 -        if (ncols_dst == 1) {
-+        // Apply to the whole mmvq range (ncols_dst 1..8), not just decode: the
-+        // speculative verify batch (n_draft+1 tokens) must use the same nwarps
-+        // as decode so its per-row dot-product accumulation is bit-identical.
-+        if (ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
-             switch (type) {
-                 case GGML_TYPE_Q4_0:
-                 case GGML_TYPE_Q4_1:
-@@ -491,7 +494,10 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
+-            switch (type) {
+-                case GGML_TYPE_Q4_0:
+-                case GGML_TYPE_Q4_1:
+-                case GGML_TYPE_Q5_0:
+-                case GGML_TYPE_Q5_1:
+-                case GGML_TYPE_Q8_0:
+-                case GGML_TYPE_Q2_K:
+-                case GGML_TYPE_Q4_K:
+-                case GGML_TYPE_Q5_K:
+-                case GGML_TYPE_Q6_K:
+-                case GGML_TYPE_IQ4_NL:
+-                case GGML_TYPE_IQ4_XS:
+-                    return 8;
+-                default:
+-                    return 1;
+-            }
+-        }
++        // Band-uniform nwarps=1 for the whole mmvq band (ncols_dst 1..8).
++        // nwarps participates in the K-split accumulation order, so decode
++        // (ncols_dst = 1) and the speculative verify batch (2..8) must use the
++        // same value.  The previous per-type nwarps=8 was tuned on single-token
++        // shapes and costs ~15% at the verify widths (llama-batched-bench B=8
++        // 3.31s -> 2.79s; MTP 32.8 -> 36.6 t/s on 27B UD-Q4_K_XL q8_0/gfx1201).
+         return 1;
+     }
      if (table_id == MMVQ_PARAMETERS_RDNA3_0) {
          // RDNA3 (W7900): stricter whitelist than RDNA4.
          // Q2_K / Q5_K / IQ4_XS regress in full quant sweeps.
@@ -1249,7 +1265,7 @@ index 6305230b1..93bc4ac08 100644
              switch (type) {
                  case GGML_TYPE_Q4_0:
                  case GGML_TYPE_Q4_1:
-@@ -500,7 +506,10 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
+@@ -500,7 +488,10 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
                  case GGML_TYPE_Q8_0:
                      return 8;
                  case GGML_TYPE_Q6_K:
@@ -1261,7 +1277,7 @@ index 6305230b1..93bc4ac08 100644
                  case GGML_TYPE_IQ4_NL:
                      return 8;
                  default:
-@@ -580,7 +589,14 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int
+@@ -580,7 +571,14 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int
      return 1;
  }
  
@@ -1277,7 +1293,7 @@ index 6305230b1..93bc4ac08 100644
  __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id(), small_k, halve_iters)*ggml_cuda_get_physical_warp_size(), 1)
  static __global__ void mul_mat_vec_q(
          const void * vx_ptr, const void * vy_ptr, const int32_t * ids_ptr, const ggml_cuda_mm_fusion_args_device fusion, float * dst_ptr,
-@@ -599,7 +615,7 @@ static __global__ void mul_mat_vec_q(
+@@ -599,7 +597,7 @@ static __global__ void mul_mat_vec_q(
      constexpr int vdr = get_vdr_mmvq(type);
      constexpr mmvq_parameter_table_id table_id = get_device_table_id();
      constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
@@ -1286,7 +1302,7 @@ index 6305230b1..93bc4ac08 100644
      constexpr int warp_size = ggml_cuda_get_physical_warp_size();
  
      constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
-@@ -628,11 +644,17 @@ static __global__ void mul_mat_vec_q(
+@@ -628,11 +626,17 @@ static __global__ void mul_mat_vec_q(
      bool use_gate_bias = false;
      bool use_scale = false;
      bool use_gate_scale = false;
@@ -1304,7 +1320,7 @@ index 6305230b1..93bc4ac08 100644
      ggml_glu_op active_glu;
      float glu_limit = 0.0f;
  
-@@ -645,12 +667,27 @@ static __global__ void mul_mat_vec_q(
+@@ -645,12 +649,27 @@ static __global__ void mul_mat_vec_q(
          gate_bias     = (const float *) fusion.gate_bias;
          active_glu    = fusion.glu_op;
          glu_limit     = fusion.glu_limit;
@@ -1332,7 +1348,7 @@ index 6305230b1..93bc4ac08 100644
      }
  
  
-@@ -678,13 +715,11 @@ static __global__ void mul_mat_vec_q(
+@@ -678,13 +697,11 @@ static __global__ void mul_mat_vec_q(
                      gate_biases[j] = gate_bias[j * stride_col_dst + threadIdx.x];
                  }
              }
@@ -1351,7 +1367,7 @@ index 6305230b1..93bc4ac08 100644
              }
          }
      }
-@@ -783,45 +818,68 @@ static __global__ void mul_mat_vec_q(
+@@ -783,45 +800,68 @@ static __global__ void mul_mat_vec_q(
                  }
              }
  
@@ -1442,7 +1458,7 @@ index 6305230b1..93bc4ac08 100644
      }
      if constexpr (type != GGML_TYPE_NVFP4) {
          GGML_UNUSED_VARS(use_scale, use_gate_scale, x_scale, gate_scale, x_scales, gate_scales);
-@@ -991,7 +1049,7 @@ static std::pair<dim3, dim3> calc_launch_params(
+@@ -991,7 +1031,7 @@ static std::pair<dim3, dim3> calc_launch_params(
      return {block_nums, block_dims};
  }
  
@@ -1451,7 +1467,7 @@ index 6305230b1..93bc4ac08 100644
  static void mul_mat_vec_q_switch_fusion(
          const void * vx, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,
          const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t stride_row_x, const uint32_t stride_col_y,
-@@ -1002,11 +1060,12 @@ static void mul_mat_vec_q_switch_fusion(
+@@ -1002,11 +1042,12 @@ static void mul_mat_vec_q_switch_fusion(
          const uint32_t ids_stride, cudaStream_t stream) {
  
      const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
@@ -1466,7 +1482,7 @@ index 6305230b1..93bc4ac08 100644
                   vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                   channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
                   sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
-@@ -1017,7 +1076,7 @@ static void mul_mat_vec_q_switch_fusion(
+@@ -1017,7 +1058,7 @@ static void mul_mat_vec_q_switch_fusion(
      GGML_ASSERT(!has_fusion && "fusion only supported for ncols_dst=1");
  
      const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
@@ -1475,7 +1491,7 @@ index 6305230b1..93bc4ac08 100644
          vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
          channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
          sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
-@@ -1171,13 +1230,30 @@ static void mul_mat_vec_q_switch_ncols_dst(
+@@ -1171,13 +1212,30 @@ static void mul_mat_vec_q_switch_ncols_dst(
  
                  constexpr bool c_halve_iters = decltype(halve_iters_tag)::value && c_promoted;
  
@@ -1513,7 +1529,7 @@ index 6305230b1..93bc4ac08 100644
              };
  
              if (should_use_small_k(c_ncols_dst)) {
-@@ -1435,8 +1511,8 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1435,8 +1493,8 @@ void ggml_cuda_mul_mat_vec_q(
          GGML_ASSERT( !ids || dst->ne[2] <= get_mmvq_mmid_max_batch(src0->type, cc));
          GGML_ASSERT(  ids || dst->ne[1] == 1);
          // Scale fusion is only allowed for NVFP4 currently as the cost of checking this at run-time in the prologue is
@@ -1524,7 +1540,7 @@ index 6305230b1..93bc4ac08 100644
  
          if (fusion->x_bias) {
              GGML_ASSERT(fusion->x_bias->type == GGML_TYPE_F32);
-@@ -1457,9 +1533,23 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1457,9 +1515,23 @@ void ggml_cuda_mul_mat_vec_q(
          if (fusion->x_scale) {
              GGML_ASSERT(fusion->x_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->x_scale));
@@ -1549,7 +1565,7 @@ index 6305230b1..93bc4ac08 100644
          if (fusion->gate_scale) {
              GGML_ASSERT(fusion->gate_scale->type == GGML_TYPE_F32);
              GGML_ASSERT(ggml_is_contiguous(fusion->gate_scale));
-@@ -1468,6 +1558,10 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1468,6 +1540,10 @@ void ggml_cuda_mul_mat_vec_q(
          }
          fusion_local.glu_op = fusion->glu_op;
          fusion_local.glu_limit = fusion->glu_limit;
@@ -1560,7 +1576,7 @@ index 6305230b1..93bc4ac08 100644
      }
  
      // If src0 is a temporary compute buffer, clear any potential padding.
-@@ -1482,12 +1576,22 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1482,12 +1558,22 @@ void ggml_cuda_mul_mat_vec_q(
      }
  
      const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
@@ -1589,7 +1605,7 @@ index 6305230b1..93bc4ac08 100644
      }
  
      const int64_t s01 = src0->nb[1] / ts_src0;
-@@ -1513,12 +1617,466 @@ void ggml_cuda_mul_mat_vec_q(
+@@ -1513,12 +1599,466 @@ void ggml_cuda_mul_mat_vec_q(
      const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
  
      mul_mat_vec_q_switch_type(

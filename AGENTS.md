@@ -158,8 +158,8 @@ point** (`f3f1a8f27` iGPU lazy-load default + `304665fe7` SYCL
 IQ-type-for-MoE, both dated after `9113cc188`), so
 `git format-patch 9113cc188..<that branch's tip>` there would export those
 two upstream commits as patches 0001/0002.  The **canonical** 16-block
-chain is a rebuild of the delivery set at `9113cc188` (tip `0f4f83f9e`, net tree
-  `c3142fe0b311757f458647f172f623859f5bc983`,
+chain is a rebuild of the delivery set at `9113cc188` (tip `1837856e3`, net tree
+  `56a1c5f23c54c038f78d7242dc05b181d872b69b`,
 built by applying the delivery patches with `scripts/apply-all.sh` at
 `9113cc188`; block 02 amended 2026-09-11 with the whole-batch
 K-independent chunked GDN prefill and again 2026-09-12 with the rollback-bounded
@@ -196,8 +196,10 @@ which is what
 to; always regenerate from a canonical fork rebuilt at the fork point.
 **Block 15 (the attention-memory campaign) is the delivery's last patch** --
 promoted 2026-09-12 from `beta/block-15-campaign-wins/` (`patches/0015`;
-the canonical 16-block tip is `0f4f83f9e`, tree
-`c3142fe0b311757f458647f172f623859f5bc983`).
+the canonical 16-block tip is `1837856e3`, tree
+`56a1c5f23c54c038f78d7242dc05b181d872b69b`; the 2026-09-12 block-08 + block-10
+amendment -- issue #30: RDNA4 band-uniform `nwarps=1` + the block-10 VDR=4 revert --
+is the newest content change, blocks 0008 and 0010).
 
 Block provenance on the canonical chain: block 00 added 2026-09-10 (FA
 small-batch KV-split width invariance, issue #25, plus the Vulkan
@@ -370,6 +372,17 @@ Consequences, so it is not re-litigated:
 - **The pin regressed** (session 7): `~/bin/high-power` (dpm=high +
   runtime-PM) costs tg -5-7% / pp -15-18% on RCCL/hybrid paths. Server runs
   UNPINNED, 3-GPU (`HIP_VISIBLE_DEVICES=0,1,2`), hybrid default.
+- **The mmvq band-uniform knobs are a purity requirement *and* a perf trap (2026-09-12, issue #30).**
+  `nwarps` and the vec_dot VDR both participate in the mmvq K-split accumulation order, so the MTP
+  purity invariant forces *one* value across the whole decode/verify band (`ncols_dst 1..8`) — but the
+  band-uniform value must be tuned at the **verify widths**, not only at `ncols_dst == 1`.  The delivery
+  had made the RDNA4 `calc_nwarps` table band-uniform while keeping its single-token-tuned per-type
+  `nwarps=8`, and the block-10 VDR=4 boost was likewise single-token-tuned; together they cost up to
+  +35 % on the verify widths (27B UD-Q4_K_XL `q8_0`, `llama-batched-bench` B=8, `plain` acceptance
+  flat).  The fix is the band-uniform optimum: **RDNA4 `nwarps=1`** and the block-10 **VDR=4 reverted**.
+  Before shipping any decode/verify or mmvq change, run the stock-relative verify-width
+  `llama-batched-bench -npl 1,4,8` gate added to `benchmarks/mtp-adaptive-methodology.md` (rule 5) —
+  acceptance and `llama-bench tg128` both pass while a verify-width regression is present.
 - **The set applies whitespace-clean**: `apply-all.sh` prints no git
   whitespace warnings (re-verified 2026-09-01 on `0eadefebd`,
   2026-09-02 on the `9cffdcc80` re-base, 2026-09-04 after the
@@ -675,7 +688,7 @@ AR backend is then never reached.
 ### Regenerate the patches (after fork changes)
 
 `scripts/make-patches.sh` (defaults: fork `~/llama.cpp`, base `9113cc188`,
-blocks tip `0f4f83f9e`): `git format-patch --start-number 0` the block
+blocks tip `1837856e3`): `git format-patch --start-number 0` the block
 commits (all 16 blocks are committed fork commits; block 00 keeps the file
 prefix `0000`; `git diff <base>..<tip>` yields
 `rdna-boosts-all.patch`).  NOTE on the fork topology: **the working
@@ -684,7 +697,7 @@ prefix `0000`; `git diff <base>..<tip>` yields
 than the fork point (`f3f1a8f27`, `304665fe7`), so a raw
 `9113cc188..HEAD` range there exports those two upstream commits as patches
 0001/0002.  The canonical 16-block chain is a rebuild of the delivery set at
-`9113cc188` (tip `0f4f83f9e`), which is what the default tip names.  Always regenerate from a
+`9113cc188` (tip `1837856e3`), which is what the default tip names.  Always regenerate from a
 canonical fork rebuilt AT `9113cc188`; a rebuilt fork produces its own
 commit SHAs, so patch bodies stay identical but the `From <sha>` line and
 the `[PATCH NN/15]` series count change.  Then
