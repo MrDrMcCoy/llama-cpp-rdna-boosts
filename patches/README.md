@@ -84,7 +84,7 @@ promotion section below), so the set now applies as block 00 + blocks
 | `0007` | meta device-wrapper skip |
 | `0008` | fused-core prefill kernels + GPU bit-identical results | **amended 2026-09-06 with the scale+unary fused kernel** (unary.cu/cuh, fork f5ac11903). | **amended 2026-09-07 with the mul_mat+add through-view shape guard (PR #15, DanoPTT)** — see the 2026-09-07 re-base section. | **amended 2026-09-11 with the quantized-KV-type enablement** (`q4_1`/`q5_0`/`q5_1` lose the `GGML_CUDA_FA_ALL_QUANTS` guard — predicate + the three diagonal vec instances + the three CMake default lists) | **amended 2026-09-11 (fifth) with `iq4_nl`** — the predicate case, the **15 missing `fattn-vec-instance-iq4_nl-*.cu` pairs** (the generator's `TYPES_KV` did not carry the type) with the diagonal in the three CMake default lists, `vec_dot_fattn_vec_KQ_iq4_nl` + `dequantize_V_iq4_nl`, and the **non-contiguous FA staging converter** `dequantize_q4_nl` (without it any `iq4_nl` K/V *view* reached the tile kernel as a null function pointer — a SIGSEGV that was unreachable only because the type had no FA path at all) | **amended 2026-09-12 with the RDNA4 band-uniform `nwarps=1`** (the 2026-09-11 purity work widened the RDNA4 `calc_nwarps` whitelist from `ncols_dst == 1` to the whole `ncols_dst <= MMVQ_MAX_BATCH_SIZE` band but kept the single-token-tuned `nwarps=8` values; the verify widths lose ~15% on them, so the whole RDNA4 band is `nwarps=1`; RDNA3_0/RDNA3_5 unchanged) — see the 2026-09-12 block-08 + block-10 amendment section below and the `iq4_nl` section below.
 | `0009` | meta-buffer compute-container headroom |
-| `0010` | k-quant-boosts: Q4_K/Q5_K/Q6_K/Q8_0 mmvq VDR (+ q8_1 quantize-cache fusions) | **amended 2026-09-12: the VDR=4 mmvq boost is reverted in full** (`vecdotq.cuh` restored to the upstream VDR set — Q4_K/Q5_K/Q6_K back to 2/2/1 and Q8_0 back to 2; the 32-element variants lose on the spec verify widths, see the block-08 + block-10 amendment section below).  The block keeps the `mmq-vec-dot.cuh` `dmA_reg` fold, the RDNA3_5 nwarps table and the Q4_K `MUL_MAT_ID` cap. |
+| `0010` | k-quant-boosts: Q4_K/Q5_K/Q6_K/Q8_0 mmvq VDR (+ q8_1 quantize-cache fusions) | **amended 2026-09-12: the VDR=4 mmvq boost is reverted for the dense kernels** (`vecdotq.cuh` restored to the upstream dense VDR set — Q4_K/Q5_K/Q6_K back to 2/2/1 and Q8_0 back to 2; the 32-element variants lose on the spec verify widths, see the block-08 + block-10 amendment section below) | **amended 2026-09-12 (17): the VDR is now per kernel** — the dense mmvq selectors keep the upstream VDR while the MoE expert kernel `mul_mat_vec_q_moe` takes block 10's VDR=4 back through its own selectors; `vecdotq.cuh` returns to the block with the `_vdr4`/`_vdr2` functions only (the dense macros stay upstream).  The block keeps the `mmq-vec-dot.cuh` `dmA_reg` fold, the RDNA3_5 nwarps table and the Q4_K `MUL_MAT_ID` cap. |
 | `0011` | skip CUDA graphs for multi-token PRE-FILL |
 | `0012` | **hybrid HIP all-reduce (block 12)** - the custom internal AR; hybrid dispatch; RDNA4-only gate; runtime NCCL-failure fallback (amended 2026-09-04, issue #13); **amended 2026-09-11 - the small/large crossover is now width-safe** (2-device `32768` -> `131072` elements; see the block-12 notes) |
 | `0013` | **fused MoE gate+up+GLU MMQ + mmvq short-K item-split (block 13)** - prefill fused expert MMQ (RDNA4 + RDNA3.5 + RDNA3.0, Q3_K/Q4_K/Q5_K/Q8_0/Q6_K) + decode item-split; **amended 2026-09-02 with the two MTP regression fixes** (mmvq ksplit dispatch for verify batches; rms_norm-fold gate for multi-token MoE); **amended 2026-09-11 with the dense ncols==1 ksplit alignment** (dense `MUL_MAT` rows always ksplit for every K so single-token decode is row-identical to the 2..8-token verify batch; `MUL_MAT_ID`/MoE kept the item-split at that point — superseded by the second 2026-09-11 amendment below) — see the block-13 notes below; **amended again 2026-09-11 with the MoE `MUL_MAT_ID` dispatch fix** (all `MUL_MAT_ID` now use the dedicated MoE kernel, completing what the dense fix left open — `ncols_dst == 1` previously took the dense ksplit kernel with an ids gather; **+6.2% MoE decode**) **and the `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE` kill-switch** (the decode-only fused shared-expert epilogue is not bit-exact with the unfused chain — the accepted MoE residual; see the block-13 notes); **amended 2026-09-05 with the RDNA3_5 gate relaxation** (gfx1151 validated; see the block-13 notes) and **with the RDNA3_0 gate relaxation** (gfx1100 validated; see the block-13 notes); see block 13 notes below | **amended 2026-09-06 with the model-neutral Strix MoE mmq folds** (fork 1da01fa67 routed-compact, 7a6a2e97b swiglu-input quantize, f33ffaca7 mwr float4, 6d457634e split_j+Q8_0 rows, 0a3a2b498 quantize chunk, 6a80b695c mul_mat_q_pair kernel, b31940a5e weighted-down mmvq kernel, f5ac11903 scale-unary window). Fold trail: wip/archive/qwen4exp/README.md. | **amended 2026-09-08 with the moe_weighted_reduction float4 remainder fix (issue #19)**; **amended 2026-09-11 with the F2 cause-2 decode/verify band-uniformity fix** (upstream's per-type mmvq caps are floored at `MMVQ_MAX_BATCH_SIZE` and `mul_mat_vec_q_moe`'s launch bound is sized at the band, completing block 13's own "decode == verify" invariant for the whole band — `W=1..8` bit-identical, **+14-26 %** at the verify widths) — see the block-13 notes below; **amended 2026-09-11 with the fused shared-expert epilogue band** (the decode-only `ne[1] == 1` gate now serves the whole `n_tokens <= MMVQ_MAX_BATCH_SIZE` band, with the kernels made token-generic and `nwarps` pinned to the single-token reduction order — `W=1..8` bit-identical, MoE `draft-mtp` acceptance 0.51 -> 0.82 with 167.3 t/s vs plain 96.9 on Qwen3.6-35B-A3B; the asterisk is gone) — see the block-13 notes below; **amended 2026-09-12 with the column-blocked fused shared-expert epilogue** (the band amendment's `grid = (nrows, ncols)` launched one block per `(output row, token)`, re-reading the down-weight row per token and duplicating both barriers, the cross-warp reduction and the epilogue — for the 35B-A3B geometry only warp 0 of 8 did any work; the kernel is now templated on `ncols_dst` with the token loop inside the k-block loop and `grid = (nrows)`, the weight row read once per `(row, k-block)` for the whole band, `nwarps` still pinned and every token's reduction order unchanged, so the change is **bit-identical** — old-vs-new `libggml-hip.so` A/B: probe `W = 1..8` all `ac8825358d9adfda`, all `bd138ad2326fbbf2` with the kill-switch, the §5 matrix and the §19 `plain == n_max 3 == n_max 7` gate `68c0a24ed8d4` unchanged, MTP acceptance `0.87179` — while recovering the item-5 cost: `llama-batched-bench` `pl 8` 461.0 -> 475.4 t/s (+3.1 %), `pl 4` 299.1 -> 306.5 (+2.4 %), `pl 1` flat, i.e. the fused default now beats the unfused reference at every width); **amended 2026-09-12 with the RDNA3_5 (gfx1151) single-token-only mmvq fusion skip** (the dense gate+up+GLU fusion and the weighted-down MoE tail are single-token-only and do not reproduce the standalone mmvq arithmetic, so a 1-token decode and an n-token verify of the same layer are not bit-identical — the issue-25 "block-13 `n_q=1` short-K mmvq variance"; skipped on RDNA3_5 unless `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1`, restoring `W=1..8` to one hash for qwen4exp f16/q8_0 and the MoE, at ~0.9 % tg128 on qwen4exp) — see the block-13 notes below.
@@ -226,6 +226,59 @@ check used `llama-bench tg128` (single token — the one width that never regres
 `llama-batched-bench pl=8` check was old-vs-new *within* the delivery.  The missing gate — a
 **stock-relative** `llama-batched-bench`/verify-width comparison on a dense K-quant model with a
 quantized KV cache — is added to `../benchmarks/mtp-adaptive-methodology.md`.
+
+## 2026-09-12 (17) block-10 amendment: the VDR is per kernel (dense upstream, MoE expert block-10)
+
+The (16) amendment above reverted block 10's VDR=4 **for every kernel**.  That is the right value
+for the **dense** mmvq kernels at the spec verify widths, but the wrong one for the **MoE expert**
+kernel: `mul_mat_vec_q_moe` (the `MUL_MAT_ID` path) launches `(warp_size, ncols_dst)` — one warp per
+token — and never calls `calc_nwarps`, so the block-08 `nwarps` change never reached it; it *does*
+call `get_vdr_mmvq`/`get_vec_dot_q_cuda`, so the global revert took the wide chunk away from the one
+kernel it was tuned for.  The VDR is now selected **per kernel**:
+
+* dense `mul_mat_vec_q` (item-split), `mul_mat_vec_q_ksplit` and their fused variants keep the
+  upstream VDR (Q4_K/Q5_K/Q6_K 2/2/1, Q8_0 2) through the default `moe = false`;
+* `mul_mat_vec_q_moe` takes block 10's values through `get_vec_dot_q_cuda(type, true)` /
+  `get_vdr_mmvq(type, true)`: Q4_K/Q5_K -> `..._vdr4`, Q6_K -> `..._vdr2`, Q8_0 ->
+  `vec_dot_q8_0_q8_1_moe` (`VDR_Q8_0_Q8_1_MMVQ_MOE`, 4 on RDNA4/RDNA3_0, else 2).
+
+`vecdotq.cuh` returns to the block carrying the `_vdr4`/`_vdr2` functions **only** (the dense macros
+stay at the upstream values, so `hc-mix.cu`'s `VDR_Q8_0_Q8_1_MMVQ` use and every dense reference
+hash are unchanged).  The VDR is a compile-time per-type constant in both kernels, so each stays
+band-uniform across W = 1..8 and the decode/verify invariant is untouched.
+
+**Measurements** (same rig / protocol as (16); MoE = 35B-A3B UD-Q4_K_M f16 KV, dense = 27B
+UD-Q4_K_XL q8_0 KV, `HIP_VISIBLE_DEVICES=0`; `llama-batched-bench` TG total seconds, MoE `-ntg 64`,
+dense `-ntg 32`):
+
+| build | dense B=1 | dense B=8 | MoE B=1 | MoE B=8 | MoE MTP n_max 3 |
+|---|---|---|---|---|---|
+| pre-(16) | 1.149 | 3.915 | 0.713 | 1.494 | 166.6 t/s |
+| (16) amended | 1.175 | 2.798 | 0.782 | 1.506 | 160.2 t/s |
+| **(17) per-kernel VDR** | 1.174 | **2.795** | 0.783 | **1.452** | 161.2 t/s |
+
+So (17) keeps the dense fix and recovers the **VDR-caused part** of the MoE loss (B=8
+1.506 -> 1.452, better than pre-(16)).  The remaining MoE single-token/`n_max 3` delta vs pre-(16)
+is **not** the VDR:
+
+**nwarps attribution (corrects the (16) note).**  A diagnostic build restoring the pre-(16) per-type
+`nwarps = 8` (RDNA4) while keeping the per-kernel VDR recovers MoE B=1 to **0.716 s** and MoE MTP to
+**167.4 t/s** (pre-(16): 0.713 / 166.6) — the MoE single-token/MTP loss is the **band-uniform
+`nwarps = 1` on the dense layers**, not the expert VDR.  But the same build costs the dense model's
+MTP (35.9 -> 34.3 t/s at `n_max 7`), the MoE verify width (B=8 1.452 -> 1.499) and the dense 27B's
+Q8_0 decode path, so a per-type split cannot satisfy both models: the same Q8_0 type serves the MoE
+attention (where `nwarps = 8` wins) and the 27B's decode (where it loses).  The band-uniform
+`nwarps = 1` is kept — it is the value the (16) dense verify fix requires — and the residual MoE
+single-token/MTP delta is a **documented trade**, not a fixed regression.
+
+**Purity (unchanged by (17))**: the 4B all-8-KV-type width probe and the 27B `q8_0`/`f16`/`bf16`
+probe reproduce every (16) hash exactly; the 27B 8-KV-type text gate (`plain == mtp3 == mtp7`)
+reproduces every (16) hash; `test-backend-ops` ROCm0 **17999/17999**.
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated 16-patch set, strict **16/16**
+`git am`, zero whitespace warnings, applied tree **`2833f1369bdea4cb45f68f85dbb2898fd98aab66`**
+(rebuilt canonical tip `a05225f7361ea5a1116d7185ebec8867cfe4afe2`).  Block 0010 is the only content
+change vs the (16) regeneration; block 13's hand-carried 2026-09-12 RDNA3_5 note is preserved.
 
 ## 2026-09-12 block-15 promotion: the attention-memory campaign is delivered
 

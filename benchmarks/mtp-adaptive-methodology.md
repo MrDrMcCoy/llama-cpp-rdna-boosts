@@ -53,6 +53,15 @@ the confirmation.  The amended verify path measured B=8 2.798 s vs stock 2.929 s
 2026-09-12 (16) WORKLOG entry and the block-08 + block-10 amendment section in
 `../patches/README.md`.
 
+Follow-up (2026-09-12 (17)): the VDR half of the fix is now **per kernel** (dense upstream, MoE
+expert `mul_mat_vec_q_moe` keeps block-10's VDR=4).  The MoE expert kernel is not reached by
+`calc_nwarps` (one warp per token), so the band-uniform `nwarps=1` still applies to the MoE model's
+*dense* layers — that is the source of the residual MoE single-token/MTP delta vs the pre-(16)
+build (a diagnostic restoring per-type `nwarps=8` recovers MoE B=1 0.783 -> 0.716 s and MTP
+161 -> 167 t/s but costs the dense 27B MTP 35.9 -> 34.3 t/s).  The gate is unchanged, but when
+judging a change also measure the **affected model class**: a knob that is dense-purity-mandated
+can still cost a MoE model's dense layers (and vice versa).
+
 ## Protocols
 
 ### Protocol A — fast per-build gate (llama-cli, fixed seed)

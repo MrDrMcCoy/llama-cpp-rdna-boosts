@@ -1,4 +1,4 @@
-From e5240bab774d81c1eaf0580defe7e6867cb84fbf Mon Sep 17 00:00:00 2001
+From f0f6bfa07050a719077932e86b425ceff01117bc Mon Sep 17 00:00:00 2001
 From: Stew Forster <stew675@gmail.com>
 Date: Tue, 1 Sep 2026 06:50:35 -0500
 Subject: [PATCH 13/15] rdna-boosts: block 13: fused MoE gate+up+GLU MMQ + mmvq
@@ -1415,7 +1415,7 @@ index 964c9678e..801f990d2 100644
  
  bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts);
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 51c22e4bf..f9d87b1ba 100644
+index 951893a9d..4fc78f238 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -287,6 +287,17 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type

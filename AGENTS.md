@@ -158,8 +158,8 @@ point** (`f3f1a8f27` iGPU lazy-load default + `304665fe7` SYCL
 IQ-type-for-MoE, both dated after `9113cc188`), so
 `git format-patch 9113cc188..<that branch's tip>` there would export those
 two upstream commits as patches 0001/0002.  The **canonical** 16-block
-chain is a rebuild of the delivery set at `9113cc188` (tip `1837856e3`, net tree
-  `56a1c5f23c54c038f78d7242dc05b181d872b69b`,
+chain is a rebuild of the delivery set at `9113cc188` (tip `a05225f73`, net tree
+  `2833f1369bdea4cb45f68f85dbb2898fd98aab66`,
 built by applying the delivery patches with `scripts/apply-all.sh` at
 `9113cc188`; block 02 amended 2026-09-11 with the whole-batch
 K-independent chunked GDN prefill and again 2026-09-12 with the rollback-bounded
@@ -196,10 +196,10 @@ which is what
 to; always regenerate from a canonical fork rebuilt at the fork point.
 **Block 15 (the attention-memory campaign) is the delivery's last patch** --
 promoted 2026-09-12 from `beta/block-15-campaign-wins/` (`patches/0015`;
-the canonical 16-block tip is `1837856e3`, tree
-`56a1c5f23c54c038f78d7242dc05b181d872b69b`; the 2026-09-12 block-08 + block-10
-amendment -- issue #30: RDNA4 band-uniform `nwarps=1` + the block-10 VDR=4 revert --
-is the newest content change, blocks 0008 and 0010).
+the canonical 16-block tip is `a05225f73`, tree
+`2833f1369bdea4cb45f68f85dbb2898fd98aab66`; the 2026-09-12 (17) block-10
+amendment -- the mmvq VDR split per kernel (dense upstream, MoE expert block-10 VDR=4) --
+is the newest content change, block 0010 only).
 
 Block provenance on the canonical chain: block 00 added 2026-09-10 (FA
 small-batch KV-split width invariance, issue #25, plus the Vulkan
@@ -379,7 +379,15 @@ Consequences, so it is not re-litigated:
   had made the RDNA4 `calc_nwarps` table band-uniform while keeping its single-token-tuned per-type
   `nwarps=8`, and the block-10 VDR=4 boost was likewise single-token-tuned; together they cost up to
   +35 % on the verify widths (27B UD-Q4_K_XL `q8_0`, `llama-batched-bench` B=8, `plain` acceptance
-  flat).  The fix is the band-uniform optimum: **RDNA4 `nwarps=1`** and the block-10 **VDR=4 reverted**.
+  flat).  The fix is the band-uniform optimum: **RDNA4 `nwarps=1`** and, for the **dense** mmvq kernels,
+  the block-10 **VDR reverted to upstream**.  The VDR is **per kernel** since 2026-09-12 (17): the MoE
+  expert kernel `mul_mat_vec_q_moe` is not reached by `calc_nwarps` (one warp per token) but does use
+  the VDR, so it keeps block-10's wide chunk through its own selectors (`get_vec_dot_q_cuda(type, true)`)
+  — dense VDR=2, MoE-expert VDR=4, each band-uniform.  **The residual MoE single-token/MTP delta vs the
+  pre-amendment build is the `nwarps=1` on the dense layers, not the VDR**: a diagnostic restoring
+  per-type `nwarps=8` recovers MoE B=1 0.783 -> 0.716 s and MTP 161 -> 167 t/s but costs the dense 27B
+  MTP (35.9 -> 34.3 t/s at `n_max 7`), because the same Q8_0 type is in both models' decode paths — no
+  per-type split satisfies both, so `nwarps=1` is kept as a documented trade.
   Before shipping any decode/verify or mmvq change, run the stock-relative verify-width
   `llama-batched-bench -npl 1,4,8` gate added to `benchmarks/mtp-adaptive-methodology.md` (rule 5) —
   acceptance and `llama-bench tg128` both pass while a verify-width regression is present.
@@ -688,7 +696,7 @@ AR backend is then never reached.
 ### Regenerate the patches (after fork changes)
 
 `scripts/make-patches.sh` (defaults: fork `~/llama.cpp`, base `9113cc188`,
-blocks tip `1837856e3`): `git format-patch --start-number 0` the block
+blocks tip `a05225f73`): `git format-patch --start-number 0` the block
 commits (all 16 blocks are committed fork commits; block 00 keeps the file
 prefix `0000`; `git diff <base>..<tip>` yields
 `rdna-boosts-all.patch`).  NOTE on the fork topology: **the working
@@ -697,7 +705,7 @@ prefix `0000`; `git diff <base>..<tip>` yields
 than the fork point (`f3f1a8f27`, `304665fe7`), so a raw
 `9113cc188..HEAD` range there exports those two upstream commits as patches
 0001/0002.  The canonical 16-block chain is a rebuild of the delivery set at
-`9113cc188` (tip `1837856e3`), which is what the default tip names.  Always regenerate from a
+`9113cc188` (tip `a05225f73`), which is what the default tip names.  Always regenerate from a
 canonical fork rebuilt AT `9113cc188`; a rebuilt fork produces its own
 commit SHAs, so patch bodies stay identical but the `From <sha>` line and
 the `[PATCH NN/15]` series count change.  Then

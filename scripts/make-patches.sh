@@ -50,6 +50,10 @@
 #                 And the 2026-09-12 (16) block-08 + block-10 amendment (issue #30):
 #                 the RDNA4 calc_nwarps table is band-uniform nwarps=1 and block 10's
 #                 VDR=4 mmvq boost is reverted (see patches/README.md).
+#                 And the 2026-09-12 (17) block-10 amendment: the VDR is split per kernel --
+#                 the dense mmvq selectors (mul_mat_vec_q item-split / _ksplit) stay at the
+#                 upstream VDR while the MoE expert kernel (mul_mat_vec_q_moe) takes block
+#                 10's VDR=4 through its own selectors, both still band-uniform internally.
 #                 The block-15 tip of the *working*
 #                 fork checkout (~/llama.cpp rdna-boosts) is a different SHA,
 #                 because that branch is a local rebuild -- do not use it for
@@ -69,7 +73,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORK="${1:-$REPO_DIR/../llama.cpp}"
 BASELINE="${2:-9113cc188}"
-TIP="${3:-1837856e3f8120449090c0f44594427573a541ed}"
+TIP="${3:-a05225f7361ea5a1116d7185ebec8867cfe4afe2}"
 PATCHES="$REPO_DIR/patches"
 
 if [ ! -e "$FORK/.git" ]; then

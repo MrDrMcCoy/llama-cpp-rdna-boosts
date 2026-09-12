@@ -1,5 +1,52 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (17) — block-10 amendment: the mmvq VDR is per kernel (dense upstream, MoE expert block-10)
+
+Follow-up to (16).  The (16) revert of block 10's `VDR=4` was **global**; a code read shows the
+**MoE expert kernel** `mul_mat_vec_q_moe` (the `MUL_MAT_ID` path) is *not* reached by the block-08
+`nwarps` change (it launches `(warp_size, ncols_dst)` — one warp per token — and never calls
+`calc_nwarps`) but *is* reached by `get_vdr_mmvq`/`get_vec_dot_q_cuda`, so the global revert took the
+wide chunk from the one kernel it was tuned for.  The VDR is now selected **per kernel**: the dense
+`mul_mat_vec_q` (item-split), `_ksplit` and their fused variants keep the upstream VDR
+(Q4_K/Q5_K/Q6_K 2/2/1, Q8_0 2, `moe = false` default); `mul_mat_vec_q_moe` takes block 10's values
+through `get_vec_dot_q_cuda(type, true)` / `get_vdr_mmvq(type, true)` — Q4_K/Q5_K `..._vdr4`, Q6_K
+`..._vdr2`, Q8_0 `vec_dot_q8_0_q8_1_moe` (`VDR_Q8_0_Q8_1_MMVQ_MOE`, 4 on RDNA4/RDNA3_0, else 2).
+`vecdotq.cuh` returns to the block with the `_vdr4`/`_vdr2` functions **only** — the dense macros
+stay upstream, so `hc-mix.cu` and every dense reference hash are unchanged.  Both kernels stay
+band-uniform internally (the VDR is a compile-time per-type constant).
+
+**Measured** (1 GPU gfx1201; MoE 35B-A3B Q4_K_M f16 `-ntg 64`, dense 27B UD-Q4_K_XL q8_0 `-ntg 32`;
+`llama-batched-bench` TG total seconds, MoE MTP `draft-mtp n_max 3`):
+
+| build | dense B=1 | dense B=8 | MoE B=1 | MoE B=8 | MoE MTP n3 |
+|---|---|---|---|---|---|
+| pre-(16) | 1.149 | 3.915 | 0.713 | 1.494 | 166.6 t/s |
+| (16) amended | 1.175 | 2.798 | 0.782 | 1.506 | 160.2 t/s |
+| **(17) per-kernel VDR** | 1.174 | **2.795** | 0.783 | **1.452** | 161.2 t/s |
+
+So (17) keeps the dense fix and recovers the **VDR-caused part** of the MoE loss (B=8 1.506 -> 1.452,
+better than pre-(16)).
+
+**Correction to the (16) attribution**: the *larger* MoE single-token/MTP loss is the band-uniform
+`nwarps = 1` on the dense layers, **not** the VDR.  A diagnostic build restoring the pre-(16)
+per-type `nwarps = 8` (RDNA4) while keeping the per-kernel VDR recovers MoE B=1 to **0.716 s** and
+MoE MTP to **167.4 t/s** — but costs dense MTP (35.9 -> 34.3 t/s at `n_max 7`) and MoE B=8
+(1.452 -> 1.499).  The 27B's Q8_0 decode path is hit too, so no per-type split satisfies both models
+(the same Q8_0 type serves the MoE attention and the 27B decode).  `nwarps = 1` is kept — it is what
+the (16) dense verify fix requires — and the residual MoE single-token/MTP delta is a **documented
+trade**, not a fixed regression.
+
+**Validation** (clean-apply `deliver-verify` build): the 4B all-8-native-KV-type width probe and the
+27B `q8_0`/`f16`/`bf16` probe reproduce every (16) hash; the 27B 8-KV-type text gate
+(`plain == mtp3 == mtp7`) reproduces every (16) hash; dense MTP `n_max 7` 35.9 t/s / `n_max 3`
+46.7 t/s; MoE MTP `n_max 3` 161.2 t/s / acceptance 0.87179; `test-backend-ops` ROCm0
+**17999/17999** passed, 0 FAIL.
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated 16-patch set, strict **16/16**
+`git am`, zero whitespace warnings, applied tree **`2833f1369bdea4cb45f68f85dbb2898fd98aab66`**
+(rebuilt canonical tip `a05225f7361ea5a1116d7185ebec8867cfe4afe2`).  Block 0010 is the only content
+change vs the (16) regeneration; block 13's hand-carried 2026-09-12 RDNA3_5 note is preserved.
+
 ## 2026-09-12 (16) — block-08 + block-10 amendment: the MTP decode regression (issue #30)
 
 Issue **#30** (briansp2020, single R9700 gfx1201, dense **Qwen3.8-27B UD-Q4_K_XL**, `q8_0` KV)

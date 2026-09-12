@@ -74,8 +74,8 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 The current delivery is a **16-patch set** (block 00 + blocks 01-15) for
 llama.cpp at the fork
 point `9113cc188` (blocks 00-15 in `patches/`, applied with `git am` via
-`scripts/apply-all.sh`; canonical 16-block tip `0f4f83f9e`, net tree
-`c3142fe0b311757f458647f172f623859f5bc983`, rebuilt at the
+`scripts/apply-all.sh`; canonical 16-block tip `a05225f73`, net tree
+`2833f1369bdea4cb45f68f85dbb2898fd98aab66`, rebuilt at the
 fork point; block 15 promoted 2026-09-12 from `beta/block-15-campaign-wins/`; block 02 amended 2026-09-12 with the rollback-bounded chunked-GDN threshold
 (`n_rs_batch`) and the pre-batch snapshot slots, block 13 amended 2026-09-11 with the MoE
 decode/verify mmvq band and the fused shared-expert epilogue band, block 14 amended 2026-09-11 with the hyper-connection band, the QSA
@@ -111,7 +111,7 @@ summary below is deliberately short and does not repeat them.
   `scripts/apply-all.sh` / `make-patches.sh` are 16-block flows (block 15
   is applied with `git am` like every other block; the earlier
   "beta patch applied manually on top" flow is gone).  Canonical 16-block
-  tip `0f4f83f9e`, net tree `c3142fe0b311757f458647f172f623859f5bc983`;
+  tip `a05225f73`, net tree `2833f1369bdea4cb45f68f85dbb2898fd98aab66`;
   strict **16/16** `git am` on a fresh worktree at `9113cc188`, zero
   whitespace warnings, applied tree == the re-validated beta tree.  The
   promoted patch is byte-identical to
