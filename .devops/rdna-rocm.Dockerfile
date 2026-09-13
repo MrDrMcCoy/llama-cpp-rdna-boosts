@@ -13,6 +13,11 @@
 #     non-RDNA4 GPUs (the complete/full ROCm images ship librccl);
 #   * an RDNA-only AMDGPU_TARGETS default (gfx1100/1151/1200/1201); runtime
 #     dispatch means one binary serves every supported GPU family;
+#   * /opt/rocm/lib registered with ldconfig: the TheRock-based ROCm 7.14/10.0
+#     bases do not run ldconfig for their ROCm packages, so the dynamically
+#     loaded HIP backend cannot resolve libamdhip64/librocblas/libhipblas/librccl
+#     and the image lists no ROCm devices (the classic <= 7.2.x bases register
+#     the directory themselves);
 #   * OCI labels pointing at the delivery repo so GHCR links the package to
 #     the repository.
 
@@ -120,7 +125,9 @@ RUN apt-get update \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
     && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
-    && find /var/cache -type f -delete
+    && find /var/cache -type f -delete \
+    && echo "/opt/rocm/lib" > /etc/ld.so.conf.d/rocm.conf \
+    && ldconfig
 
 COPY --from=build /app/lib/ /app
 
