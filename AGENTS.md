@@ -158,8 +158,8 @@ point** (`f3f1a8f27` iGPU lazy-load default + `304665fe7` SYCL
 IQ-type-for-MoE, both dated after `9113cc188`), so
 `git format-patch 9113cc188..<that branch's tip>` there would export those
 two upstream commits as patches 0001/0002.  The **canonical** 16-block
-chain is a rebuild of the delivery set at `9113cc188` (tip `a05225f73`, net tree
-  `2833f1369bdea4cb45f68f85dbb2898fd98aab66`,
+chain is a rebuild of the delivery set at `9113cc188` (tip `907799de3`, net tree
+  `c2e284c2acc032238ef85cb35d427c1598ed0949`,
 built by applying the delivery patches with `scripts/apply-all.sh` at
 `9113cc188`; block 02 amended 2026-09-11 with the whole-batch
 K-independent chunked GDN prefill and again 2026-09-12 with the rollback-bounded
@@ -196,10 +196,11 @@ which is what
 to; always regenerate from a canonical fork rebuilt at the fork point.
 **Block 15 (the attention-memory campaign) is the delivery's last patch** --
 promoted 2026-09-12 from `beta/block-15-campaign-wins/` (`patches/0015`;
-the canonical 16-block tip is `a05225f73`, tree
-`2833f1369bdea4cb45f68f85dbb2898fd98aab66`; the 2026-09-12 (17) block-10
-amendment -- the mmvq VDR split per kernel (dense upstream, MoE expert block-10 VDR=4) --
-is the newest content change, block 0010 only).
+the canonical 16-block tip is `907799de3`, tree
+`c2e284c2acc032238ef85cb35d427c1598ed0949`; the 2026-09-12 (18) block-13
+amendment -- the dense mmvq weight per-(type, K) nwarps (Q8_0 `K < 4096` -> 8, else 1;
+the pinned fusion ops keep band-uniform `calc_nwarps`) -- is the newest content
+change, block 0013 only).
 
 Block provenance on the canonical chain: block 00 added 2026-09-10 (FA
 small-batch KV-split width invariance, issue #25, plus the Vulkan
@@ -383,11 +384,19 @@ Consequences, so it is not re-litigated:
   the block-10 **VDR reverted to upstream**.  The VDR is **per kernel** since 2026-09-12 (17): the MoE
   expert kernel `mul_mat_vec_q_moe` is not reached by `calc_nwarps` (one warp per token) but does use
   the VDR, so it keeps block-10's wide chunk through its own selectors (`get_vec_dot_q_cuda(type, true)`)
-  — dense VDR=2, MoE-expert VDR=4, each band-uniform.  **The residual MoE single-token/MTP delta vs the
-  pre-amendment build is the `nwarps=1` on the dense layers, not the VDR**: a diagnostic restoring
-  per-type `nwarps=8` recovers MoE B=1 0.783 -> 0.716 s and MTP 161 -> 167 t/s but costs the dense 27B
-  MTP (35.9 -> 34.3 t/s at `n_max 7`), because the same Q8_0 type is in both models' decode paths — no
-  per-type split satisfies both, so `nwarps=1` is kept as a documented trade.
+  — dense VDR=2, MoE-expert VDR=4, each band-uniform.  **The residual MoE single-token/MTP delta was
+  the `nwarps=1` on the dense layers, not the VDR**; it is recovered by the 2026-09-12 (18) block-13
+  amendment, which makes the dense mmvq *weight* kernel pick `nwarps` **per `(type, K)`** — a Q8_0
+  weight with `K < 4096` (the MoE attention qkv/gate and the lm_head) takes the wide block (8), every
+  other shape stays at 1; `K = ncols_x >= 4096` is a compile-time `long_k` template bool.  The choice
+  is per tensor shape (K is fixed for a weight), so `W = 1..8` still agree.  The **pinned fusion ops
+  (GDN/SSM, shared-expert, the gate fusions) MUST keep plain `calc_nwarps`** — their
+  `calc_nwarps(GGML_TYPE_Q8_0, 1, ...)` is a single-token reduction-order anchor, and leaking the rule
+  into them made the 27B `f16` probe impure; that is the trap to watch.  Net (18): MoE B=1 +4 %, MTP
+  `n_max 3` +2 %, `n_max 7` +10 % (acceptance 0.631 -> 0.731), at −2.8 % on the MoE batched B=8; the
+  dense 27B is bit-identical.  The **opposite** assignment (giving the dense kernel the MoE's wide
+  VDR=4 on the same short-K shapes) was measured and **rejected**: +1.6 % batched B=8 but it cancels
+  the MTP gain — the two knobs have independent per-kernel optima.
   Before shipping any decode/verify or mmvq change, run the stock-relative verify-width
   `llama-batched-bench -npl 1,4,8` gate added to `benchmarks/mtp-adaptive-methodology.md` (rule 5) —
   acceptance and `llama-bench tg128` both pass while a verify-width regression is present.
@@ -696,7 +705,7 @@ AR backend is then never reached.
 ### Regenerate the patches (after fork changes)
 
 `scripts/make-patches.sh` (defaults: fork `~/llama.cpp`, base `9113cc188`,
-blocks tip `a05225f73`): `git format-patch --start-number 0` the block
+blocks tip `907799de3`): `git format-patch --start-number 0` the block
 commits (all 16 blocks are committed fork commits; block 00 keeps the file
 prefix `0000`; `git diff <base>..<tip>` yields
 `rdna-boosts-all.patch`).  NOTE on the fork topology: **the working
@@ -705,7 +714,7 @@ prefix `0000`; `git diff <base>..<tip>` yields
 than the fork point (`f3f1a8f27`, `304665fe7`), so a raw
 `9113cc188..HEAD` range there exports those two upstream commits as patches
 0001/0002.  The canonical 16-block chain is a rebuild of the delivery set at
-`9113cc188` (tip `a05225f73`), which is what the default tip names.  Always regenerate from a
+`9113cc188` (tip `907799de3`), which is what the default tip names.  Always regenerate from a
 canonical fork rebuilt AT `9113cc188`; a rebuilt fork produces its own
 commit SHAs, so patch bodies stay identical but the `From <sha>` line and
 the `[PATCH NN/15]` series count change.  Then

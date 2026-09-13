@@ -62,6 +62,19 @@ build (a diagnostic restoring per-type `nwarps=8` recovers MoE B=1 0.783 -> 0.71
 judging a change also measure the **affected model class**: a knob that is dense-purity-mandated
 can still cost a MoE model's dense layers (and vice versa).
 
+Follow-up (2026-09-12 (18)): that residual is recovered by making the dense mmvq **weight** kernel
+pick `nwarps` per `(type, K)` — a Q8_0 weight with `K < 4096` (the MoE attention qkv/gate and the
+lm_head) takes the wide block (8), every other shape stays at 1; the choice is per tensor shape, so
+`W = 1..8` still agree.  Measured: MoE B=1 **+4 %**, MTP `n_max 3` **+2 %**, `n_max 7` **+10 %**
+(acceptance 0.631 -> 0.731), at −2.8 % on the MoE batched B=8; the dense 27B is **bit-identical**
+(its Q8_0 weights are `K >= 5120` -> `long_k` -> 1).  **The pinned fusion ops (GDN/SSM,
+shared-expert, the gate fusions) must keep the band-uniform `calc_nwarps`** — their
+`calc_nwarps(GGML_TYPE_Q8_0, 1, ...)` is a single-token reduction-order anchor, and leaking the rule
+into them breaks the 27B `f16` width purity (verified).  The **opposite** assignment (giving the dense
+kernel the MoE's wide VDR=4 on the same short-K shapes) was measured and **rejected**: +1.6 % batched
+B=8 but it cancels the MTP gain (acceptance back to 0.63115) — the two knobs have independent
+per-kernel optima.
+
 ## Protocols
 
 ### Protocol A — fast per-build gate (llama-cli, fixed seed)

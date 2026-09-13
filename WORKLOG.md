@@ -1,5 +1,49 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (18) — block-13 amendment: dense mmvq weight per-(type, K) nwarps (targeted MoE recovery)
+
+Follow-up to (16)/(17).  The (16) band-uniform RDNA4 `nwarps = 1` fixed the dense verify widths but
+cost the MoE model's **dense** Q8_0 layers ~9 % at single-token decode (diagnosed in (17); the MoE
+expert kernel does not use `calc_nwarps`, so the loss is the dense MUL_MATs).  The dense mmvq
+**weight** kernel `mul_mat_vec_q_ksplit` now picks `nwarps` **per `(type, K)`** via a new
+`calc_nwarps_weight()`: RDNA4 + `Q8_0` + `K < 4096` -> the pre-2026-09-11 wide block (`nwarps = 8`),
+every other shape -> 1.  `K = ncols_x >= 4096` is computed host-side and threaded as a compile-time
+`long_k` template bool (launch bounds and the shared-memory-sized reduction stay compile-time).
+Crucially the **pinned fusion ops keep plain `calc_nwarps`** (their `calc_nwarps(GGML_TYPE_Q8_0, 1,
+...)` call is a single-token reduction-order anchor) — leaking the rule into them made the 27B `f16`
+KV width probe impure at W=1; scoping it fixed that.
+
+**Measured** (1 GPU; MoE 35B-A3B f16 `-ntg 64`, dense 27B UD-Q4_K_XL q8_0):
+
+| metric | (17) `nwarps=1` | (18) per-(type,K) |
+|---|---|---|
+| dense MTP `n_max 7` | 35.75 | 35.65 (~0, 27B bit-identical) |
+| dense B=8 | 2.865 | 2.875 (~0) |
+| MoE B=1 plain | 0.7835 | **0.752 (+4.0 %)** |
+| MoE MTP `n_max 3` | 161.0 | **164.2 (+2.0 %)** |
+| MoE MTP `n_max 7` | 159.5 (acc 0.63115) | **177.1 (+10.0 %, acc 0.73148)** |
+| MoE B=8 batched TG | 1.4445 | 1.485 (−2.8 %) |
+
+The 27B is bit-identical (Q8_0 K >= 5120 -> `long_k` -> 1), so the dense issue-#30 fix is untouched;
+the MoE batched B=8 cost is the deliberate trade and still beats the pre-(16) 1.494.
+
+**The opposite assignment was measured and rejected**: giving the dense kernel the MoE expert
+kernel's wide VDR=4 on the same short-K Q8_0 shapes buys 1.6 % on the batched B=8 but cancels the
+MTP gain (`n_max 7` 177.1 -> 161.2, acceptance back to 0.63115).  The two knobs have independent
+per-kernel optima — dense wants wide `nwarps` + narrow `VDR`, the MoE expert kernel wants wide `VDR`.
+
+**Validation** (clean-apply build): 4B all-8-KV-type width probe **PURE** with re-pinned hashes
+(`f16` `e3c53c3432c7815b`, `bf16` `7254fecf4a9728df`, `q8_0` `46a961911ca1fc12`, `q4_0`
+`bb6ae482f50502b3`, `q4_1` `32df01d9f1c4aef1`, `q5_0` `b15ab98c50aa8f51`, `q5_1` `bed6c581183172ce`,
+`iq4_nl` `b73b73f83ef30a12`); 27B `q8_0`/`f16`/`bf16` probe **bit-identical** to (17); 27B 8-KV-type
+text gate **bit-identical** to (17); MoE plain `W=1..8` PURE; `test-backend-ops` ROCm0
+**17999/17999**.
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated 16-patch set, strict **16/16**
+`git am`, zero whitespace warnings, applied tree **`c2e284c2acc032238ef85cb35d427c1598ed0949`**
+(rebuilt canonical tip `907799de3e6a7dcbd206d03b2daef4c248144ca9`).  Block 0013 is the only content
+change vs the (17) regeneration; block 13's hand-carried RDNA3_5 note is preserved.
+
 ## 2026-09-12 (17) — block-10 amendment: the mmvq VDR is per kernel (dense upstream, MoE expert block-10)
 
 Follow-up to (16).  The (16) revert of block 10's `VDR=4` was **global**; a code read shows the
