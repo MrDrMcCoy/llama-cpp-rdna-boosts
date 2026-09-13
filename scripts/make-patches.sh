@@ -54,6 +54,11 @@
 #                 the dense mmvq selectors (mul_mat_vec_q item-split / _ksplit) stay at the
 #                 upstream VDR while the MoE expert kernel (mul_mat_vec_q_moe) takes block
 #                 10's VDR=4 through its own selectors, both still band-uniform internally.
+#                 And the 2026-09-12 (18) block-13 amendment: the dense mmvq *weight* kernel
+#                 (_ksplit) picks nwarps per (type, K) -- a Q8_0 weight with K < 4096 (the
+#                 MoE attention qkv/gate and the lm_head) takes the pre-2026-09-11 wide
+#                 block (nwarps=8), every other shape stays at 1; the pinned fusion ops
+#                 (GDN/SSM, shared-expert, the gate fusions) keep band-uniform calc_nwarps.
 #                 The block-15 tip of the *working*
 #                 fork checkout (~/llama.cpp rdna-boosts) is a different SHA,
 #                 because that branch is a local rebuild -- do not use it for
@@ -73,7 +78,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORK="${1:-$REPO_DIR/../llama.cpp}"
 BASELINE="${2:-9113cc188}"
-TIP="${3:-a05225f7361ea5a1116d7185ebec8867cfe4afe2}"
+TIP="${3:-907799de3e6a7dcbd206d03b2daef4c248144ca9}"
 PATCHES="$REPO_DIR/patches"
 
 if [ ! -e "$FORK/.git" ]; then

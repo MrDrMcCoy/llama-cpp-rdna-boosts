@@ -194,3 +194,13 @@ the residual MoE single-token/MTP delta is a **documented trade**.
 So the §2/§4 expectations in this handover (MoE B=1 ≈ 0.71, MTP ≈ 166) were based on the wrong
 attribution; the per-kernel VDR cannot reach them.  Full numbers: the 2026-09-12 (17) entry in
 `WORKLOG.md` and the (17) section in `patches/README.md`.
+
+## OUTCOME (2026-09-12 (18)) — the targeted nwarps shipped
+
+The residual MoE single-token/MTP delta was recovered in the **block-13 (18) amendment**: the dense
+mmvq *weight* kernel (`mul_mat_vec_q_ksplit`) now picks `nwarps` per `(type, K)` — Q8_0 with
+`K < 4096` -> 8, every other shape -> 1 (compile-time `long_k` bool; the pinned fusion ops keep
+band-uniform `calc_nwarps`).  Measured: MoE B=1 +4 %, MTP n_max 3 +2 %, n_max 7 +10 % (acceptance
+0.631 -> 0.731), at −2.8 % on the MoE batched B=8; the dense 27B is **bit-identical**.  The opposite
+assignment (dense gets the MoE's wide VDR=4 on the same short-K shapes) was tested and **rejected**
+(it cancels the MTP gain).  New canonical tip `907799de3`, tree `c2e284c2acc032238ef85cb35d427c1598ed0949`.

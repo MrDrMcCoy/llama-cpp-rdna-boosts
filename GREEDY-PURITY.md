@@ -193,7 +193,11 @@ bounded:
 2. **Block 08's `ncols_dst <= MMVQ_MAX_BATCH_SIZE` rule** forces the
    verify batch onto the same nwarps as decode, so its per-row
    accumulation is bit-identical to one-at-a-time decode *within a
-   build*.
+   build*.  The nwarps **value** is per `(type, K)` since the
+   2026-09-12 (18) block-13 amendment (dense Q8_0 `K < 4096` -> 8, else
+   1, with the pinned fusion ops kept at the band-uniform 1); K is fixed
+   for a given weight, so the band stays uniform per weight and the
+   invariant is untouched.
 
 Together these guarantee the distribution-preservation property that
 speculative decoding relies on: the acceptance criterion reproduces the
