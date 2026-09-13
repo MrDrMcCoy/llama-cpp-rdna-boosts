@@ -10,7 +10,7 @@ patched tree the same way the consumer workflow does:
 1. download upstream `ggml-org/llama.cpp` at the fork point (`9113cc188`)
    as a tarball (no full history),
 2. `git init` + one base commit, then `scripts/apply-all.sh` applies
-   `patches/0001..0015` with strict `git am`,
+   `patches/0000..0015` with strict `git am`,
 3. build with [`.devops/rdna-rocm.Dockerfile`](.devops/rdna-rocm.Dockerfile),
    an adaptation of upstream llama.cpp's `.devops/rocm.Dockerfile`
    (adds `-DGGML_HIP_RCCL=ON`, an RDNA-only `AMDGPU_TARGETS`, and a
