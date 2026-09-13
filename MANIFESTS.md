@@ -4,28 +4,24 @@ Squashed, standalone diff blocks of RDNA-specific performance and correctness
 work from the [llama.cpp fork](https://github.com/stew675/llama.cpp)
 (`rdna-boosts` branch), packaged for easy application to mainline llama.cpp.
 
-The **current delivery** is a **14-patch set** against upstream master
+The **current delivery** is a **16-patch set** (block 00 + blocks 01-15) against upstream master
 `9113cc188` (re-based 2026-09-08 from `050dde50c`, itself re-based
 2026-09-07 from `465e49b9c`, re-based 2026-09-06 from `9cffdcc80`,
 re-based 2026-09-02 from `0eadefebd`):
-blocks 01-14 (`patches/0001-…0014-…`, format-patch of the
-fork's `rdna-boosts` block commits — the current regeneration
-on `9113cc188` uses the canonical 14-block tip `ff2b35f49`, because the reference `~/llama.cpp` checkout had drifted
-two upstream master commits past the fork point (`f3f1a8f27`, `304665fe7`
-— SYCL + iGPU-only code) and a `format-patch` there would have exported
-those as patches 0001/0002; the delivered `0001`-`0014` bodies are
-byte-identical to the previous regeneration apart from the `From <sha>`
-line and the `[PATCH NN/14]` series count.  **Block 15 (the attention-memory
-campaign, V3/V4/V5 + W1-W4) is NOT part of the delivery** — it is staged in
-`beta/block-15-campaign-wins/` and applied manually on top of the 14-block
-tree; see that directory's README and the WORKLOG entry; block 01 refreshed 2026-09-09 to
-the llama.cpp PR #27210 review head `d236d41a2`; block 14 amended
-2026-09-10 with the kernel-side masked-V fixes — the 2026-09-09
-gfx1151-only freed-cell KV host zeroing it replaces is removed, see
-the dated records below; regenerated block-14 tip `ff2b35f49`, blocks
-01-13 patch bodies byte-identical to the `7c4d9c4e0..27485f1ca`
-regeneration; the previous regeneration `f84549d23..78e67a3d8` is superseded
-and preserved on the fork's history/remotes); the 2026-09-08 re-base reduced
+blocks 00-15 (`patches/0000-…0015-…`, format-patch of the
+fork's `rdna-boosts` block commits).  **Current regeneration (2026-09-12 (17), the per-kernel VDR amendment)**: canonical 16-block tip **`a05225f7361ea5a1116d7185ebec8867cfe4afe2`** (net tree `2833f1369bdea4cb45f68f85dbb2898fd98aab66`), clean-apply strict 16/16 with 0 whitespace warnings and the applied tree equal to the canonical one; only block 0010 changes content vs (16) — the mmvq VDR is split per kernel (dense upstream, MoE expert block-10 VDR=4) — see the 2026-09-12 (17) section in `patches/README.md`; the previous regeneration was 2026-09-12 (16) (tip `1837856e3f8120449090c0f44594427573a541ed`, tree `56a1c5f23c54c038f78d7242dc05b181d872b69b`, the block-08 `nwarps=1` + block-10 VDR revert), and before that 2026-09-12 (15), the block-15 promotion (tip `0f4f83f9ef01ffd1662f58d714d62b9155325a62`, tree `c3142fe0b311757f458647f172f623859f5bc983`), and blocks `0000`-`0014` were byte-identical to the regeneration before that apart from the `From` lines and the `[PATCH NN/14]` -> `[PATCH NN/15]` series denominator, and `0015` is byte-identical to the promoted beta patch apart from its `From` line.  The previous regeneration was 2026-09-12 (13): canonical 15-block tip `d306d4b4b194738dd5baad89ef77fa31a931e8ff` (net tree `3b0874b6aa367fea846a437b45f1689bd173b38c`), which amended block 14 (its 2026-09-12 (eighth) QSA indexer-score decode/verify band-uniformity fix).  **The block-15 patch was promoted on this base** (it was the 17th beta re-cut: tip `f399b13494df50d44450b0a3960eb55f6952335b`, tree `c3142fe0b311757f458647f172f623859f5bc983`, strict `git am` round-trip).  The previous regeneration was 2026-09-12 (12) (tip `c6f1e8e78`, block 14's MTP-export logits-purity fix).  The regeneration
+is always run against a canonical fork **rebuilt at the fork point**, because the reference
+`~/llama.cpp` checkout had drifted two upstream master commits past `9113cc188` (`f3f1a8f27`,
+`304665fe7` — SYCL + iGPU-only code) and a `format-patch` there would export those as patches
+0001/0002; block `0000` is the structural/architecture-fix block added 2026-09-10 (FA small-batch
+KV-split width invariance for issue #25 + Vulkan masked-V), block 01 was refreshed 2026-09-09 to the
+llama.cpp PR #27210 review head `d236d41a2`, block 03 carries the HIP masked-V fixes (re-homed from
+block 14 on 2026-09-10), block 06 is the host-buffer rationale marker (upstream itself reverted
+#24233 in #28604, so the functional delta is upstream), and block 14's 2026-09-09 gfx1151-only
+freed-cell KV host zeroing is removed.  **Block 15 (the attention-memory campaign, V3/V4/V5 + W1-W4)
+is the last delivery patch** — promoted 2026-09-12 from
+`beta/block-15-campaign-wins/`; see that directory's README (PROMOTED) and the dated WORKLOG
+entries.  The 2026-09-08 re-base reduced
 block 06 to its host-buffer rationale marker (upstream itself reverted
 #24233 in #28604 on 2026-09-08 — end state identical) and merged block
 14's quantized-KV tensor-split gate additively with upstream #28390's
@@ -33,8 +29,11 @@ single-device `SPLIT_MODE_TENSOR` warn in `llama-context.cpp`; blocks
 01-05 + 07-13 are content-identical to the previous `050dde50c`-based
 delivery, whose regeneration `d65a96084..ce641322e` is superseded and
 preserved on the fork's history/remotes); block 12 was amended
-2026-09-04 with the runtime NCCL-failure fallback (issue #13), block
-13 was amended 2026-09-02 with two MTP regression fixes, 2026-09-05
+2026-09-04 with the runtime NCCL-failure fallback (issue #13) and again
+2026-09-11 so the hybrid dispatch's small/large crossover is width-safe
+(2-device `32768` -> `131072` elements - the size-based dispatch had been
+changing the reduction algorithm with the batch width under `-sm tensor`),
+block 13 was amended 2026-09-02 with two MTP regression fixes, 2026-09-05
 with the RDNA3.5/RDNA3.0 gate relaxations and 2026-09-06 with the
 model-neutral Strix MoE mmq folds and 2026-09-08 with the
 moe_weighted_reduction float4 remainder fix (issue #19, reported by
@@ -51,7 +50,7 @@ see the dated records
 below; the previous `465e49b9c`-based regeneration
 `45bf4d291..c261553a1` is superseded and preserved on the fork's
 history/remotes). Apply flow: `git am`
-for the whole 01-14 series (plain `git apply` of the concatenated series
+for the whole 01-15 series (plain `git apply` of the concatenated series
 SILENTLY DROPS HUNKS — verified 2026-08-29);
 `scripts/apply-all.sh` automates it (strict `git am`, with an automatic
 `git am -3` 3-way-merge retry if a drifted base fails the strict apply;
@@ -114,8 +113,8 @@ This is the authoritative apply order and the verification contract for the
 patch set. It is written for humans AND LLM coding agents. Follow it exactly;
 do not skip blocks.
 
-Current state: `main` is the delivery branch (flat history, 14-patch set
-against `9113cc188`). The `baseline/<sha>` branches and `block/01-…11` tags
+Current state: `main` is the delivery branch (flat history, 16-patch set:
+block 00 + blocks 01-15 against `9113cc188`). The `baseline/<sha>` branches and `block/01-…11` tags
 are HISTORICAL checkpoints of the old pre-block-12 structure (older
 upstream ranges, `git apply` flow); do not use them for the current
 delivery — use `patches/` + `scripts/apply-all.sh`.
@@ -139,24 +138,24 @@ delivery — use `patches/` + `scripts/apply-all.sh`.
 | 12 | `0012-…-block-12-hybrid-HIP-all-reduce-RDNA4-gat.patch` | **hybrid HIP all-reduce** (internal AR for the small-tensor decode path + per-size hybrid dispatch vs RCCL; RDNA4-only gate: refuses to init off gfx1200/gfx1201, falls back to RCCL) | none (apply last) |
 | 13 | `0013-…-block-13-fused-MoE-gate-up-GLU-MMQ-mmvq-.patch` | **fused MoE gate+up+GLU MMQ + mmvq short-K item-split** (prefill fused expert MMQ, RDNA4 + RDNA3.5 + RDNA3.0 (gfx1151 validated 2026-09-05, gfx1100 validated 2026-09-05), Q3_K/Q4_K/Q5_K/Q8_0/Q6_K + decode item-split, re-based on the upstream has_fusion mmvq path; multi-token mmvq x_scale_channel_dst fusion for MoE down x topk-weights, spec-dec verify batches n=2..8; ROCm unaligned-width split-load fix for Q6_K/Q3_K 2-GPU) | none (apply last) |
 | 14 | `0014-…-block-14-qwen4exp-support.patch` | **qwen4exp / Qwen3.8-Flash-Next support** (promoted from `beta/qwen4exp`, re-based): QSA sparse FA (default) + fused indexer top-k/score, HC_MIX/HC_COMBINE fused decode ops, managed lazy reader + PLE n-gram loading, MTP draft-head, WS4 hyperconn prefill fusions, sched alloc-fallback sync fix, QSA dense shortcut + per-arch dense/QSA decode policy | none (apply last) |
+| 15 | `0015-…-block-15-campaign-memory-wins.patch` | **attention-memory wins (block 15)** (promoted 2026-09-12 from `beta/block-15-campaign-wins/`): V3 derived kq mask (`LLAMA_KQ_MASK_DERIVED`, default 1), V4 native q8_0 + V5 native bf16 K/V (`GGML_CUDA_FA_KV_NATIVE`, opt-in default 0), W1 QSA score-chain memory (`GGML_QSA_SCORE_MEM`), W2 derived QSA per-block bias + visibility (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), W3 keys-only QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), W4 ggml-alloc unused-view release (no gate) | **apply last** |
 
-Block numbers are the apply order: `01` applies first, `14` last. All blocks
+Block numbers are the apply order: `01` applies first, `15` last. All blocks
 are mutually independent except **block 08 (fused core) requires blocks 03
-and 04 in the tree**. Apply the whole 01-14 series with `git am` (or
+and 04 in the tree**. Apply the whole 01-15 series with `git am` (or
 `scripts/apply-all.sh`) — the concatenated-series `git apply` trick
 silently drops hunks.
 
 
 ## Verified apply sequence
 
-### Block-15 attention-memory campaign wins (2026-09-10, STAGED in `beta/` — not a delivery patch)
+### Block-15 attention-memory campaign wins (2026-09-10; promoted to the delivery 2026-09-12)
 
-> **NOTE (2026-09-10):** Block 15 is a **beta-staged** patch, NOT part of the
-delivered 14-patch set.  The record below documents its validation; it is
-kept as the beta validation record and the "apply-last" wording reflects
-the temporary staging.  The patch lives at
-`beta/block-15-campaign-wins/block-15-campaign-wins.patch` and is applied
-manually on top of the 14-block tree.
+Block 15 is the RDNA memory campaign squashed into one block; it was promoted
+to the delivery on 2026-09-12 as `patches/0015` and is now applied by
+`scripts/apply-all.sh` together with blocks 00-14.  The record below is the
+validation history (the "staged in `beta/`" wording reflects the beta window,
+now closed).
 
 Block 15 is the RDNA memory campaign squashed into one block.  It removes
 compute-buffer VRAM and host buffer from the attention paths at
@@ -164,20 +163,24 @@ byte-identical output.  Six wins, each with an environment A/B gate
 (V4 is an *enable* switch, default off); full mechanism notes and the
 per-win measurement tables are in `beta/block-15-campaign-wins/README.md`.
 
-Apply + regeneration verification:
+Apply + regeneration verification (the `[PATCH NN/14]` / `ff2b35f49`
+figures inside the bullets below are the then-current beta-staging state; the
+promotion on 2026-09-12 made the delivery the 16-patch set `0000`-`0015`,
+tip `0f4f83f9e`, tree `c3142fe0b311757f458647f172f623859f5bc983`):
 
-- fresh worktree at `9113cc188` -> `scripts/apply-all.sh` (**strict 14/14
-  `git am`** for the delivery, zero whitespace warnings) + the beta
-  `block-15-campaign-wins.patch` applied on top; this is how the beta
-  patch was validated when it was temporarily staged in `patches/`.  It is
-  no longer staged: the delivery is 14 patches and the beta patch lives in
-  `beta/block-15-campaign-wins/`.
+- fresh worktree at `9113cc188` -> `scripts/apply-all.sh` (**strict 16/16
+  `git am`** for the promoted 16-patch delivery, zero whitespace warnings,
+  applied tree == canonical tree `c3142fe0b3`); the promoted `patches/0015`
+  is byte-identical to `beta/block-15-campaign-wins/block-15-campaign-wins.patch`
+  apart from its `From <sha>` line.  (During the beta window the same tree was
+  validated by applying the 15-block delivery + the beta patch on top.)
 - the delivered `0001`-`0014` files are byte-identical to the previous
-  regeneration except the `From <sha>` line and the `[PATCH NN/14]`
-  series count (verified hunk by hunk); there is no `patches/0015`.
-- `rdna-boosts-all.patch` refreshed = `git diff 9113cc188..ff2b35f49`
-  (98 files; the V5 amendment added 171 net lines to the beta block-15
-  patch only — the delivery stayed byte-identical).
+  regeneration except the `From <sha>` line and the `[PATCH NN/14]` ->
+  `[PATCH NN/15]` series count (verified hunk by hunk); `patches/0015` is the
+  promoted block-15 patch.
+- `rdna-boosts-all.patch` refreshed = `git diff 9113cc188..0f4f83f9e`
+  (127 files; the block-15 promotion added the campaign delta to the net
+  patch — blocks 00-14 are otherwise unchanged).
 
 Combination validation (3x R9700/RDNA4; individually-validated wins do
 NOT carry over, so this was re-run on the merged tree and then again on
@@ -878,7 +881,7 @@ run-to-run noise, no measurable impact from the bounded-spin fix.
 | 13 | `test-backend-ops` MUL_MAT_ID_FUSION sweep (bs 1/4/512; 16222/16222) + MoE decode perf; **MTP regression gate** — `benchmarks/mtp-adaptive-methodology.md` protocol A on the dense Q4_K_XL-UD and MoE Q4_K_M-UD (seed-42: draft acceptance > ~0.45, draft-mtp >= plain at depth 3) | fused types pass; Q6_K tg128 >= 97.6; dense mtp 27.5 / plain 30.1; MoE acceptance 0.51, draft-mtp 126 t/s |
 | 14 | test-llama-archs qwen4exp rows + llama-cli same-seed coherence on the Flash-Next GGUFs (3-GPU gfx1201 IQ4_XS) + dense 27B coherence (block-14-off paths: `LLAMA_QSA_OFF=1` / `GGML_CUDA_DISABLE_HC_FUSION=1` A/B) | arch matrix OK (GPU ~9e-14, CPU 0.00); qwen4exp output byte-identical to the pre-promotion fork; dense unchanged |
 
-Convenience: `rdna-boosts-all.patch` (repo root) is the entire 14-patch net
+Convenience: `rdna-boosts-all.patch` (repo root) is the entire 16-patch net
 as ONE patch (applies cleanly on `9113cc188` alone; not a substitute for the
 per-block flow in `patches/` when you want reviewable increments).
 

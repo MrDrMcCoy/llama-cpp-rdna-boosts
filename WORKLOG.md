@@ -1,7 +1,1031 @@
 # WORKLOG — dated delivery records
 
+## 2026-09-12 (17) — block-10 amendment: the mmvq VDR is per kernel (dense upstream, MoE expert block-10)
+
+Follow-up to (16).  The (16) revert of block 10's `VDR=4` was **global**; a code read shows the
+**MoE expert kernel** `mul_mat_vec_q_moe` (the `MUL_MAT_ID` path) is *not* reached by the block-08
+`nwarps` change (it launches `(warp_size, ncols_dst)` — one warp per token — and never calls
+`calc_nwarps`) but *is* reached by `get_vdr_mmvq`/`get_vec_dot_q_cuda`, so the global revert took the
+wide chunk from the one kernel it was tuned for.  The VDR is now selected **per kernel**: the dense
+`mul_mat_vec_q` (item-split), `_ksplit` and their fused variants keep the upstream VDR
+(Q4_K/Q5_K/Q6_K 2/2/1, Q8_0 2, `moe = false` default); `mul_mat_vec_q_moe` takes block 10's values
+through `get_vec_dot_q_cuda(type, true)` / `get_vdr_mmvq(type, true)` — Q4_K/Q5_K `..._vdr4`, Q6_K
+`..._vdr2`, Q8_0 `vec_dot_q8_0_q8_1_moe` (`VDR_Q8_0_Q8_1_MMVQ_MOE`, 4 on RDNA4/RDNA3_0, else 2).
+`vecdotq.cuh` returns to the block with the `_vdr4`/`_vdr2` functions **only** — the dense macros
+stay upstream, so `hc-mix.cu` and every dense reference hash are unchanged.  Both kernels stay
+band-uniform internally (the VDR is a compile-time per-type constant).
+
+**Measured** (1 GPU gfx1201; MoE 35B-A3B Q4_K_M f16 `-ntg 64`, dense 27B UD-Q4_K_XL q8_0 `-ntg 32`;
+`llama-batched-bench` TG total seconds, MoE MTP `draft-mtp n_max 3`):
+
+| build | dense B=1 | dense B=8 | MoE B=1 | MoE B=8 | MoE MTP n3 |
+|---|---|---|---|---|---|
+| pre-(16) | 1.149 | 3.915 | 0.713 | 1.494 | 166.6 t/s |
+| (16) amended | 1.175 | 2.798 | 0.782 | 1.506 | 160.2 t/s |
+| **(17) per-kernel VDR** | 1.174 | **2.795** | 0.783 | **1.452** | 161.2 t/s |
+
+So (17) keeps the dense fix and recovers the **VDR-caused part** of the MoE loss (B=8 1.506 -> 1.452,
+better than pre-(16)).
+
+**Correction to the (16) attribution**: the *larger* MoE single-token/MTP loss is the band-uniform
+`nwarps = 1` on the dense layers, **not** the VDR.  A diagnostic build restoring the pre-(16)
+per-type `nwarps = 8` (RDNA4) while keeping the per-kernel VDR recovers MoE B=1 to **0.716 s** and
+MoE MTP to **167.4 t/s** — but costs dense MTP (35.9 -> 34.3 t/s at `n_max 7`) and MoE B=8
+(1.452 -> 1.499).  The 27B's Q8_0 decode path is hit too, so no per-type split satisfies both models
+(the same Q8_0 type serves the MoE attention and the 27B decode).  `nwarps = 1` is kept — it is what
+the (16) dense verify fix requires — and the residual MoE single-token/MTP delta is a **documented
+trade**, not a fixed regression.
+
+**Validation** (clean-apply `deliver-verify` build): the 4B all-8-native-KV-type width probe and the
+27B `q8_0`/`f16`/`bf16` probe reproduce every (16) hash; the 27B 8-KV-type text gate
+(`plain == mtp3 == mtp7`) reproduces every (16) hash; dense MTP `n_max 7` 35.9 t/s / `n_max 3`
+46.7 t/s; MoE MTP `n_max 3` 161.2 t/s / acceptance 0.87179; `test-backend-ops` ROCm0
+**17999/17999** passed, 0 FAIL.
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated 16-patch set, strict **16/16**
+`git am`, zero whitespace warnings, applied tree **`2833f1369bdea4cb45f68f85dbb2898fd98aab66`**
+(rebuilt canonical tip `a05225f7361ea5a1116d7185ebec8867cfe4afe2`).  Block 0010 is the only content
+change vs the (16) regeneration; block 13's hand-carried 2026-09-12 RDNA3_5 note is preserved.
+
+## 2026-09-12 (16) — block-08 + block-10 amendment: the MTP decode regression (issue #30)
+
+Issue **#30** (briansp2020, single R9700 gfx1201, dense **Qwen3.8-27B UD-Q4_K_XL**, `q8_0` KV)
+reported the delivery ~14 % **slower** on MTP decode than stock `9113cc188` at the same fork point,
+with much faster prefill.  Reproduced on the maintainer rig (27B UD-Q4_K_XL, `q8_0` KV, 1 GPU): stock
+`--spec-type draft-mtp --spec-draft-n-max 8 --spec-draft-p-min 0.55` **37.51 t/s** vs the delivery
+**30.34 t/s**; plain decode was fine (delivery slightly faster).  Root cause, via
+`llama-batched-bench` (no speculation, so no acceptance confound) — the **multi-token verify path**
+was up to **+35 %** slower at B=8, and the penalty grew with width from B=3 on.  Two band-uniform
+mmvq knobs (made uniform by the 2026-09-11 MTP purity work, but left at their **single-token-tuned
+values**):
+
+* **block 10** — the `VDR=4` mmvq boost for Q4_K/Q5_K/Q6_K (the 32-element-per-call variants lose on
+the verify widths).  **Reverted in full** (`vecdotq.cuh` back to the upstream VDR set — Q4_K/Q5_K/Q6_K
+2/2/1, Q8_0 2); `vecdotq.cuh` drops out of the block.
+* **block 08** — the RDNA4 `calc_nwarps` per-type whitelist (`nwarps=8` for the simple-vec_dot types,
+only ever tuned at `ncols_dst == 1`).  The RDNA4 band is now **band-uniform `nwarps=1`**; RDNA3_0 and
+RDNA3_5 tables unchanged.
+
+**Result** (27B UD-Q4_K_XL, `q8_0` KV, 1 GPU; `llama-batched-bench` TG total for 32 steps):
+
+| build | plain | B=1 | B=4 | B=8 | MTP n_max 7 | acc | MTP n_max 3 | acc | MTP-adaptive n_max 7 | acc |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stock `9113cc188` | 28.25 | 1.157 | 1.726 | 2.929 | 37.51 | 0.484 | — | — | — (no adaptive) | — |
+| delivery (pre-amendment) | 29.34 | 1.147 | 2.121 | 3.958 | 30.34 | 0.466 | — | — | 30.57 | 0.4201 |
+| **amended** | 28.62 | 1.175 | 1.657 | **2.798** | **36.32** | 0.475 | **40.15** | 0.611 | **38.47** | 0.4226 |
+
+So the amended **verify path is faster than stock's** and the residual MTP difference is the
+single-token `nwarps=8` (B=1 1.175 vs 1.157) that the band-uniform purity constraint forbids, plus the
+`n_max 7` clamp.  The `nwarps` sweep (band-uniform 1/2/4/8 → B=8 2.790/2.894/3.162/3.307, MTP
+36.59/36.00/33.91/32.78) picks **1**; single-token is flat (1.160–1.175) and per-type mixing never
+helped.
+
+**Validation** (amended clean-apply build, `deliver-verify`):
+* **width probe** (`logits-dump-kv`, W=1..8): 4B **all 8 native KV types** PURE; 27B `q8_0`/`f16`/`bf16`
+  PURE.
+* **text gate** (`--spec-type none` == `draft-mtp n_max 3` == `n_max 7`), 27B, **all 8 native KV
+  types** byte-identical.
+* **MoE MTP gate** (35B-A3B Q4_K_M, 1 GPU, f16 KV): plain 84.3 → `draft-mtp n_max 3` **160.2 t/s**,
+  acceptance **0.87179** (unchanged).
+* **`test-backend-ops`**: ROCm0 **17999/17999** passed, 0 FAIL.
+* Same-seed coherence: coherent; the 4B reference re-baselines `f069f69475e7` → `3eeb3d9d333e`
+  (deliberate reduction-order change).
+
+**Clean-apply**: canonical rebuild at `9113cc188` + the regenerated set, strict **16/16** `git am`, zero
+whitespace warnings, applied tree **`56a1c5f23c54c038f78d7242dc05b181d872b69b`** (canonical tip for
+this rebuild `1837856e3f8120449090c0f44594427573a541ed`).  Only blocks 0008 and 0010 change content;
+block 13's hand-carried 2026-09-12 RDNA3_5 amendment paragraph is re-added to the patch body (it is
+dropped by `git am` scissors handling).
+
+**Gate gap closed**: `../benchmarks/mtp-adaptive-methodology.md` gains a stock-relative
+verify-width `llama-batched-bench` check — the existing gate only tested acceptance at the default
+depth 3 and `llama-bench tg128` (the one width that never regressed).
+
+## 2026-09-12 (15) — block 15 promoted to the delivery (TODO item 1 closed)
+
+The attention-memory campaign (block 15) was **promoted from `beta/block-15-campaign-wins/` to the
+delivery**.  The beta window closed with the maintainer's go-ahead; the beta patch is now
+`patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch`, so the delivery is a **16-patch set**
+(block 00 + blocks 01-15) and `scripts/apply-all.sh` / `scripts/make-patches.sh` are 16-block flows
+(the old "beta patch applied manually on top of the 15-block tree" flow is gone).
+
+* **Clean-apply**: a canonical fork rebuilt at `9113cc188` from the current `patches/`
+  (`scripts/apply-all.sh`, strictly) produced tree `3b0874b6aa367fea846a437b45f1689bd173b38c`; the
+  promoted block-15 patch applied on top with strict `git am` (no `-3`), producing the re-validated
+  beta tree **`c3142fe0b311757f458647f172f623859f5bc983`** and canonical 16-block tip
+  **`0f4f83f9ef01ffd1662f58d714d62b9155325a62`**.  A fresh worktree at `9113cc188` + the updated
+  `apply-all.sh` then applied strict **16/16** `git am`, zero whitespace warnings, applied tree ==
+  `c3142fe0b3`.
+* **Patch identity**: `patches/0015` is byte-identical to the beta patch except its `From <sha>` line;
+  blocks `0000`-`0014` were regenerated from the canonical rebuild and are byte-identical to the
+  previous delivery apart from the `From` lines and the `[PATCH NN/14]` -> `[PATCH NN/15]` series
+  denominator (block 13's hand-carried 2026-09-12 RDNA3_5 amendment paragraph is preserved verifiably
+  — it is dropped by `git am`'s scissors handling, so it is re-added to the patch body as before).
+* **`rdna-boosts-all.patch`** regenerated as `git diff 9113cc188..0f4f83f9e` (127 files).
+* **The seven wins and their gates are unchanged** (W4 has no gate; V4/V5 share the opt-in
+  `GGML_CUDA_FA_KV_NATIVE`, default 0).  The revalidation that the promotion rests on reproduced every
+  reserve number to the last decimal, the width-probe reference hashes (1 GPU `4089b4d4`, 2-GPU tensor
+  `a4817ee6`, 3-GPU tensor `91434ea9`; `W=9` divergent as accepted), byte-identical same-seed coherence
+  across gates on 4B / gemma-4-E4B (ISWA) / gemma-4-31B (ISWA) / 27B (short + 40k) / qwen4exp, the op
+  suites (`FLASH_ATTN_EXT` 7859/7859 ROCm0 + CPU, `GATED_DELTA_NET` 46/46, `FLASH_ATTN_QSA` 22/22),
+  the unchanged MTP gate (27B `0.76744`, qwen4exp `0.44262`), and the W4 round trip 56.00 -> 16.00 MiB.
+  The accepted W2-`iq4_nl` ULP caveat is recorded in `beta/block-15-campaign-wins/BETA-TESTING.md` §4d.
+* **Docs**: `patches/README.md` (the 0015 row + the promotion section), `README.md`, `MANIFESTS.md`,
+  `BASELINE.md`, `AGENTS.md`, `TODO.md` (item 1 moved to Closed) and the beta README (marked
+  **PROMOTED**) all moved to the 16-patch state.  The block-15 gate table, the per-win mechanism notes
+  and the gfx1151 pass stay in `beta/block-15-campaign-wins/README.md`;
+  `wip/strix-halo/GATE-2026-09-10-block15-rdna35.md` is the gfx1151 record.
+
+## 2026-09-12 (14) — gfx1151 cross-check of the block-14 (eighth) fix: TODO item 4 fully closed
+
+TODO item 17 (the gfx1151 cross-check) is resolved and item 4 is fully closed.  Validated on gfx1151
+(Strix Halo, ROCm 7.14 at `/opt/rocm-7.14-gfx1151`) against branch `block14-band-uniformity`: fresh
+worktree at `9113cc188` + `scripts/apply-all.sh` -> strict **15/15** `git am`, 0 whitespace warnings,
+applied tree **`3b0874b6aa367fea846a437b45f1689bd173b38c`** (== canonical).
+
+* **The forced-sparse text residual is gone.**  `LLAMA_QSA_DENSE_DECODE_UNTIL=0` + q8_0 + `p5000.txt`
+  (seed 42, temp 0, n 128, `-sm layer`): pre-fix (the amendment-7 build) `plain a57bc13bbf2a` vs n3
+  `3124adfd2b94` (first diff **char 458**); post-fix `plain == n3 == a57bc13bbf2a` (632 chars).  All
+  eight native KV types are pure in the forced-sparse regime (f16 `cb2912b186b9`, bf16 `945f89766e3c`,
+  q8_0 `a57bc13bbf2a`, q4_0 `9afd1d55a5ae`, q4_1 `aff1978cf720`, q5_0 `296f8ebcd246`, q5_1
+  `a88803f4ebf9`, iq4_nl `8e4437794660`); pre-fix only q8_0 and q5_0 were impure.  **The full
+  n_max 1/2/3/5/7 sweep is pure for all eight native KV types in *both* the forced-sparse and the
+  default (dense) regimes.**  Default (dense) gates unchanged: q8_0 `e8f8bba3942b` (626), f16
+  `0fc4910d5824` (632).
+* **The `mstep` matrix is 0 mismatches at every width**: `W = 1,2,3,4,5,8` (forced-sparse q8_0) all PURE
+  with a stable `Thash = ea713a1c1f515bc1`, **unchanged vs the pre-fix build**.  (gfx1151's mstep was
+  already pure at default params pre-fix, unlike gfx1201's W=2/W>=3 boundary, so the text gate is the
+  discriminator on this arch.)
+* **Op suites**: `FLASH_ATTN_QSA` **22/22**, `GATED_DELTA_NET` **46/46**, `FLASH_ATTN_EXT` **5935/5935**.
+* **MTP acceptance (Protocol A, n_max 3)**: forced-sparse q8_0 `0.51333` (77/150), pos-1
+  `(0.740, 0.420, 0.380)`; default q8_0 `0.57554` (80/139) and default f16 `0.51678` (77/149) =
+  bit-identical to the pre-fix values.
+* **Beta**: the 17th block-15 re-cut applies cleanly on the new tree (`git am -3` -> tree
+  `c3142fe0b311757f458647f172f623859f5bc983`, the recorded beta tree).
+* **Outcome**: TODO item 4(b) dropped from *Documented* and item 17 closed; the delivery branch merges
+  into `main` with no code change beyond the (eighth) amendment already in `patches/`.  Records: this
+  entry, `TODO.md`, `patches/README.md` (the (eighth) section), `GREEDY-PURITY.md` §29, the harness
+  `wip/strix-halo/qsa-item4/`.
+
+## 2026-09-12 (13) — block-14 amendment (eighth): the QSA indexer-score decode/verify band-uniformity fix
+
+Block-14 amendment (eighth), found by the gfx1201 investigation of TODO item 4's q8_0 forced-sparse
+residual.  Canonical tip `c6f1e8e78` -> **`d306d4b4b`** (tree `e1e42e23c` ->
+**`3b0874b6aa367fea846a437b45f1689bd173b38c`**); block 14 amended in place (the tip block, so no
+replay), `make-patches.sh` default tip updated, `rdna-boosts-all.patch` regenerated; strict **15/15**
+`git am` on a fresh worktree at `9113cc188` (0 whitespace warnings, applied tree == canonical).
+
+* **The defect**: the QSA indexer score's matmul carries the indexer heads in its N dimension, so its
+  `ne11` is `n_idx_h * n_tps` (**4 * n_tps** for qwen4exp).  Block 08's "keep the verify batch on the
+  decode kernel" guard (`ne11_mmvf = ne11 <= MMVF_MAX_BATCH_SIZE ? 1 : ne11`) assumed `ne11` *is* the
+  token count, so from `n_tps = 3` the guard stopped rescuing the verify batch: decode (`n_tps = 1`)
+  stayed on the MMVF family while the verify fell through to MMF, and the two families accumulate the
+  truncated dot product differently.  The indexer score then differed by a ULP and flipped a top-k
+  near-tie - the forward was **bit-identical to decode for 101 steps and then diverged** at target
+  position 4395.  On the `p5000` prompt the greedy **text** happened to stay equal, so it was a
+  logits-level `plain != draft-mtp` violation, not a visible text change.
+* **How it was found** (gfx1201, 3x R9700): a `mstep` width matrix showed W=2 pure, W>=3 impure with the
+  first divergence at a fixed position (4395, not the first batch), i.e. a selection flip rather than
+  drift; `LLAMA_QSA_SPARSE_FA=0` / `LLAMA_QSA_OFF=1` were pure and block-15's gates irrelevant.  A
+  `rocprofv3 --kernel-trace` diff of W=2 vs W=3 showed the only exclusive kernels were ncols-templated
+  MMVF/ksplit variants, with the score moving from `mul_mat_vec_f<float,float,8,64>` (N=8) to no MMVF
+  instantiation at W=3.  Forcing the fallback family for *every* F32 matmul (a temporary diagnostic)
+  made the band pure again - confirming "one family across the band" as the fix.
+* **The fix**: `MMVF_MAX_BATCH_SIZE_FLAT` (`= MMVF_MAX_BATCH_SIZE * 4 = 32`) in `mmvf.cuh`; the block-08
+  guard widened to it in `ggml-cuda.cu`; `mul_mat_vec_f_cuda_switch_ncols_dst` instantiates
+  `ncols_dst` 9..32 in `mmvf.cu` (+168 lines).  The guard stays at the decode family (MMVF) so the
+  verified arithmetic is the one the draft's single-token decode reproduces.  The guard is block 08's;
+  block 14 extends it because block 14 is the block that introduces the flattened batch.
+* **Validation (canonical delivery tree, gfx1201, 3x R9700, layer split)**: `mstep` W = **1,2,3,4,5,8**
+  q8_0 all **0 mismatches** (pre-fix W>=3 impure), and the W=1 reference `Thash` is unchanged
+  (`2bd73063dd0a9524`) so **decode numerics are untouched**; f16 W=4 pure; forced-sparse q8_0 and
+  default text gates byte-identical (`a4cdc10dfb6c` 678 chars / `2e078b6966c0` 682 chars);
+  `FLASH_ATTN_QSA`, `GATED_DELTA_NET` and `FLASH_ATTN_EXT` all OK (4/4 backends); 27B dense
+  `plain == n_max 3` (`da2e2d192e21`); MTP acceptance healthy (forced-sparse q8_0 `0.46497`, pos-1
+  `(0.698, 0.415, 0.264)`; default `0.44444`, pos-1 `(0.673, 0.418, 0.218)`).
+* **No delivery behaviour change outside the flattened band**: for `ne11 <= 8` (decode/verify of every
+  ordinary op) and `ne11 > 32` (prefill) the guard decision is unchanged, so dense models are
+  unaffected by construction (verified: 27B `plain == draft-mtp`).
+* **Open cross-check** (confirmed 2026-09-12 (14): the gfx1151 forced-sparse text residual is gone and
+  all eight native KV types are pure — see the (14) entry): whether this also removes the gfx1151
+  `plain != draft-mtp` text residual that
+  `TODO.md` *Documented* records (same signature, different arch - gfx1151's `mstep` was reported pure)
+  is to be confirmed by the gfx1151 box against this branch.  The fix is arch-independent in the engine
+  (per-arch MMVF tables aside), so the branch is the test vehicle.
+* Records: this entry, `GREEDY-PURITY.md` §29, `patches/README.md` (the block-14 amendments list),
+  `wip/strix-halo/qsa-item4/` (the `mstep` harness).
+
+## 2026-09-12 (12) — TODO item 4 closed: the block-14 MTP-export logits-purity fix + the q8_0 forced-sparse residual recorded as a limitation
+
+TODO item 4 is closed.  It had two sub-items; **(a)** is fixed and landed as a block-14
+amendment (seventh), **(b)** survives a genuine driver-level investigation and is recorded as a
+measured, deliberately-NOT-fixed limitation.  Canonical tip `47a9d4d86` ->
+**`c6f1e8e78cfb2a70958998cdd81fad363e869f93`** (tree `c24871386c479865d41476726cf1f01c43b23ea6` ->
+**`e1e42e23c2913cd529b0064eb1cb74525a746098`**); block 14 amended in place (the tip block, so no
+replay), `make-patches.sh` default tip updated; strict **15/15** `git am` on a fresh worktree at
+`9113cc188` (0 whitespace warnings, applied tree == canonical); `rdna-boosts-all.patch`
+regenerated; beta block-15 **re-cut 16th** (`bdd09891d588225e139a67e510094d972acd1858`, tree
+`3a47913c0bdca7f1154a8f0310a20435a36c0faa`, patch 206 454 bytes, round-tripped strict `git am`).
+
+* **(a) `embeddings_nextn` broke logits-level `plain == draft-mtp` on qwen4exp.**  The unmasked MTP
+export needs a hidden row for every prefill token, so the last layer's output-row gather was
+deferred; the last layer's ffn tail then ran on the full ubatch and the prefill's last-position
+logits shifted by a ULP (`ad3acaa75d19ddf2` vs `b624a79f19b1b1f0`).  The last layer now always
+gathers the output rows before its tail (exactly the plain path) and builds a **second, full-row
+tail** solely for `t_h_nextn` when the chunk drops rows (`n_outputs < n_tokens`); a decode/verify
+batch drops none, so nothing is duplicated there.  **Verified (gfx1151):** the `mstep` `NEXTN=1`
+prefill mismatch is gone (`0` mismatches; was `1` at `pos = 4293`); the `W=4 RB=3 RS=3 JUNK=1`
+width probe is `0` mismatches and the `W=8` 38-mismatch position list is byte-identical pre/post
+(all 38 positions); default and forced-sparse text gates byte-identical (`e8f8bba3942b` /
+`0fc4910d5824`); MTP acceptance bit-identical (f16 `0.51678` = 77/149 both builds); the graph is a
+no-op on every non-NEXTN path (the gather already ran with `gather_now == true`).  Instrument:
+`wip/strix-halo/qsa-item4/`.
+* **(b) the forced-sparse shallow q8_0 residual is recorded, not fixed.**  Repro:
+`LLAMA_QSA_DENSE_DECODE_UNTIL=0` + `-ctk/-ctv q8_0` + `p5000.txt` + `draft-mtp n3` on qwen4exp ->
+`plain a57bc13bbf2a` vs `n3 3124adfd2b94` (632/657 chars).  A logits-level first divergence was
+localised with a temporary target-logits dump in the real `server-context.cpp` driver: at target
+position **4432** the accepted token is identical (381) but the target logits argmax flips
+**264 -> 9859** - a QSA-indexer *selection/state* divergence, not a forward width dependence (the
+`mstep` replay is bit-pure).  Excluded on the current tip: forward width (`mstep` W=1..8 pure), the
+GDN rollback bound and checkpoint restore (`n_rs_seq = 16` forced - still diverges;
+`test-recurrent-state-rollback` PASS), `n_outputs_max`, CUDA-graph capture, the chunked-prefill
+boundary, the fused indexer score and the derived cache (both bypassed with quantized keys), and the
+sparse FA kernel (`LLAMA_QSA_SPARSE_FA=0` does not fix it - the shared dense masked path is
+affected).  `LLAMA_QSA_OFF=1` fixes it and `GGML_CUDA_GDN_CHUNKED=0` only perturbs the trajectory to
+purity; the delivery default (dense decode below 64K) is pure, so this is a forced-arm,
+prompt-dependent, q8_0-only low-severity limitation.  Record:
+`wip/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md` + `GREEDY-PURITY.md` §18/§28.
+* **Gates (gfx1151, current tip):** `FLASH_ATTN_QSA` 22/22, `GATED_DELTA_NET` 46/46, `FLASH_ATTN_EXT`
+5935/5935; dense-masked oracle (Sherlock corpus, 4x4096, f16) sparse `1.0539` vs dense `1.0544`;
+band purity default q8_0/f16 pure and forced-sparse f16 pure; `draft-mtp n_max 3/5/7` acceptance /
+text unchanged; beta re-cut revalidated (`GATED_DELTA_NET` 46/46, `FLASH_ATTN_QSA` 22/22,
+`test-recurrent-state-rollback` PASS, the four gate combos + `draft-mtp n_max 3` all
+`0fc4910d5824`).
+* **No new Active item**; item 4 is removed from Active with a Closed one-liner, and the residual is
+one entry in *Documented, deliberately NOT fixed*.
+
+## 2026-09-12 (10) — block-02 amendment: the chunked-GDN snapshot bound (`n_rs_batch`) + the pre-batch slot
+
+Integrated from the gfx1201 investigation in `~/ngram-mod/` (record: `wip/gdn-rs-rollback/README.md`;
+originals `~/ngram-mod/{README.md,fix-ngram-mod.md,gdn-rs-rollback-bound.patch}`).  Canonical tip
+`890a9c5b1` -> **`47a9d4d86`** (tree `0edf654cdea653b9969f866977a541ee4429f846` ->
+**`c24871386c479865d41476726cf1f01c43b23ea6`**); block 02 amended in place and blocks 03-14 replayed with
+**no conflicts** (the net delta is byte-exactly the patch: 20 files, +96/-23), and patch bodies
+`0003`-`0014` changed **only in their `From`/`index` lines plus hunk offsets** (verified: all 52 changed
+lines in `0014` are hunk headers).  `make-patches.sh` default tip updated; strict 15/15 `git am` on a
+fresh worktree at `9113cc188` (0 whitespace warnings, applied tree == canonical); beta block-15
+**re-cut 15th** (`eb15f3ee1`, tree `ffa3a11c30ba6d42dea2520f402126370df3bbb6`, patch 3 819 lines,
+round-tripped, cherry-pick clean).
+
+* **The defect**: the whole-batch chunked GDN path wrote no rollback snapshots for batches above its
+  threshold, on the assumption that such a batch is "not a verify batch".  `n_rs_seq` comes from
+  `speculative.draft.n_max` (7) but `--spec-ngram-mod-n-max` can draft 64, so a 65-token verify batch
+  took the chunked path and a small tail rollback restored an unwritten plane - a silent
+  recurrent-state rewind.  The block-02 `seq_rm` guard (2026-09-11) is the detector; the reported
+  warning is real.
+* **The fix**: `n_rs_batch` (longest draft any enabled speculator can produce + 1, from
+  `common_speculative_n_max()`) is threaded `llama_context_params` -> `llama_cparams` ->
+  `ggml_gated_delta_net()` op param 1 -> the CUDA dispatch, where the threshold becomes
+  `max(K > 16 ? K : 16, n_rs_batch)`; plus the pre-batch ssm/conv state is written into slot
+  `n_tokens` when `0 < n_tokens < K`, so a whole-batch rollback has the state it needs.  No snapshot
+  memory change (sizing `n_rs_seq = 64` would have cost ~+8 GiB).
+* **Validation (gfx1151)**: in-tree `test-recurrent-state-rollback` **FAIL -> PASS** (unpatched:
+  `multi-seq split replay logits mismatch (max diff 6.5366, first at seq 0 pos 16)`; patched:
+  `matched (max diff 0)` for both cache fills + the seq-1-only case); `GATED_DELTA_NET` **46/46**;
+  neutrality: 27B `plain == draft-mtp n_max 7` = `e164f09af338` and qwen4exp `plain` = `0fc4910d5824`
+  identical before/after, 27B pp2048/8192 within noise; beta re-cut revalidated (`GATED_DELTA_NET`
+  46/46, `FLASH_ATTN_QSA` 22/22, rollback test PASS, all four gate combos + `draft-mtp n_max 3`
+  byte-identical `0fc4910d5824`).
+* Trade recorded: batches in `(max(K,16), n_rs_batch]` now run the sequential kernel (correctness
+  requires it - the chunked kernel cannot write those snapshots).  Delivery configs are unaffected
+  because their `n_rs_batch <= 16`.
+
+## 2026-09-12 (9) — TODO item 9 resolved and closed: the configurable QSA prefill arm + the device-query arm gate
+
+Block-14 amendment (sixth).  Canonical tip `13af95ac1` -> **`890a9c5b1`** (tree
+`f4791066f4a582316b1ca95f51c96cd10b905ef7` -> **`0edf654cdea653b9969f866977a541ee4429f846`**);
+`make-patches.sh` default tip updated; strict 15/15 `git am` re-verified on a fresh worktree at
+`9113cc188` (0 whitespace warnings, applied tree == canonical); beta block-15 **re-cut 14th** on the
+new base (`86c7df1f5`, tree `66f0762a2ec19cbc34b1842d1b5984bb82ecec45`, patch 3 819 lines,
+round-tripped).  Full record: `wip/strix-halo/qsa-item9/RECORD-2026-09-12-qsa-prefill-crossover.md`.
+
+* **9(a) the prefill arm is now configurable, and its default is the documented policy: `0` = QSA
+  prefill always.**  Prefill previously had no depth axis at all (only the decode crossover
+  `qsa_dense_decode_until`), so `qsa_dense_prefill_until` (env `LLAMA_QSA_DENSE_PREFILL_UNTIL`,
+  `K/M/G`, `0` disables the arm) is a genuine addition; a prefill ubatch whose `n_kv` is still below
+  the threshold attends dense while storing the indexer keys, so the sparse path takes over above it.
+  The default is `0` on every arch and split because that is the ARCH POLICY -- `beta/qwen4exp/README.md`
+  ("decode uses the dense attend below a per-arch depth and QSA above; **prefill is always QSA**") and
+  the 2026-09-07 crossover record ("**Soar: QSA for prefill ALWAYS** (wins from ~8K, monotonically to
+  +181 % @160K); dense for decode ALWAYS"; Halo from ~16K).  **The delivery's default behaviour is
+  therefore byte-identical to the pre-amendment build** (f16 `0fc4910d5824`, q8_0 `e8f8bba3942b` = the
+  recorded pre-amendment shallow values; `plain == draft-mtp n_max 3 == n_max 7`), so no reference hash
+  moves, and the arm ships as an opt-in A/B.
+  *Correction recorded on purpose:* this session's first pass set a default (gfx1151 8192, tensor split
+  16384) from a **whole-prompt** `llama-bench` A/B plus a parenthetical in `patches/README.md`, and the
+  maintainer corrected it -- the gfx1201 decision is QSA prefill always, dense never better.  The
+  2026-09-07 record already carried the reason that A/B cannot decide a default: its tables are
+  `pp2048` measured *at depth*, and it explicitly rejects the shape ("the old \"dense wins prefill at
+  30K\" record is obsolete ... also a non-comparable whole-prompt llama-cli banner").  The A/B numbers
+  are kept in the record as a description of what the knob does, flagged non-comparable, and the
+  default is the policy.
+* **9(b) the arm gate asks the device instead of mirroring the kernel's type list.**  `qsa_kv_native`
+  was a hand-maintained copy of `ggml_cuda_flash_attn_qsa_supported()` (kept in lockstep by comment)
+  and its staleness is what made the 2026-09-11 third amendment an abort in the meta splitter instead
+  of a fallback.  `qsa_op_supported()` now builds a minimal probe tensor and asks
+  `ggml_backend_dev_supports_op(model.dev_layer(il), probe)`; under `-sm tensor` that device is the
+  Meta device, whose `supports_op()` is `all_of(sub-devs)`, so the query is the meta-split safety
+  condition.  The `LLM_FUSED_OP_FLASH_ATTN_QSA` probe the item suggested is structurally impossible
+  (a QSA node exists only above the 2051 selection width, so a reserve-time probe graph has none).
+  Probe table: 0 mismatches vs the old list on gfx1151, plus an unsupported head size (D=80) now
+  rejected where the list accepted it; same-seed text byte-identical to the pre-amendment build;
+  cost 0.112 us/call.
+* **Gates:** strict 15/15 apply (tree == canonical) and `FLASH_ATTN_QSA` 22/22 + `FLASH_ATTN_EXT`
+  pass; the default is byte-identical to the pre-amendment build (f16 `0fc4910d5824` 632 chars for
+  `plain == n_max 3`, q8_0 `e8f8bba3942b` 626 chars for `plain == n_max 7`); beta re-cut builds clean,
+  its `FLASH_ATTN_QSA` suite is 22/22, and all four gate combos (default / `GGML_QSA_SCORE_MEM=0` /
+  `GGML_QSA_DERIVED_*=0` / `LLAMA_QSA_KEYS_ONLY=0`) plus `draft-mtp n_max 3` are byte-identical
+  (`0fc4910d5824`, 632 chars) = the delivery's value.  The 14th re-cut also **folded the missing
+  `nullptr, nullptr` argument into the beta commit**: the 13th re-cut's exported patch had it only in
+  the worktree, not in the commit, so a clean `git am` of that patch would not have compiled.
+* **TODO**: item 9 removed from Active (Closed one-liner added); Active is now items 3 and 4 only.
+  One observation recorded, not filed as an item: on the substitute PPL text the halo sparse path
+  reads 24.71 against the same selection computed densely at 22.28 - the documented oracle text is
+  absent on this box, so this is not comparable with the recorded 6.5267/6.5306 parity and is left as
+  an observation (the patch does not touch that path).
+
+## 2026-09-12 (8) — TODO triage: Active cut from 13 items to 3, item 11 closed with a measurement
+
+No delivery change (one experiment implemented, measured and **reverted**).
+
+- **Item 11 (MXFP4/NVFP4 fused gate+up+GLU MMQ) attempted and closed — the type-list edit is a no-op.**
+  Implemented the planned change (`GGML_TYPE_MXFP4` in `MMQ_GATE_TYPES` + the generated gate instance, the
+  `ggml_cuda_mul_mat_q_switch_type_gate` case, `moe_mmq_type`), built it, and instrumented the gate case
+  with a one-shot counter: **0 firings** over a full `gpt-oss-20b-MXFP4` prefill with the arm enabled.
+  The model's MoE graph is the expert-bias `{MUL_MAT_ID, ADD_ID, MUL_MAT_ID, ADD_ID, GLU}` pattern, whose
+  only fused arm is the **mmvq/decode** one — there is no MMQ (prefill) fused arm for it and the MMQ
+  fused epilogue has no `x_bias`/`gate_bias`/scale support.  Perf ~0 (pp2048 1741.3 vs 1742.0 t/s,
+  pp16384 1506.7 vs 1501.6, fused vs `GGML_CUDA_DISABLE_MOE_MMQ_FUSION=1`), same-seed text byte-identical.
+  Experiment reverted; `wip`-free.  Side finding: `generate_cu_files.py`'s `SOURCE_MMQ_GATE` re-emits the
+  file header on append, so re-running the generator mutates the 5 committed gate instance files.
+- **TODO restructure (the point of the session):** Active is now only what this repo will work on next —
+  items **3** (`iq4_nl` prefill), **4** (QSA sparse residual + the `embeddings_nextn` logits caveat) and
+  **9** (QSA knobs).  Items 1/6/8/12 → *Waiting on others* (maintainer go-ahead, other hardware, upstream
+  filing); 5(c)/5(d)/5(g)/13 → *accepted limitations* (item 5(d): the mmq `sum[]` overflow is latent — no
+  upstream config violates `I >= nwarps*16`, so there is no reproducer to file); 5(a)/5(b)/15/16 →
+  *Parked*; item 14 → *Closed* (canonical chain re-verified at `13af95ac1`).  No item content was deleted —
+  every moved item keeps its body under the new heading, and the details stay in the dated records.
+
+## 2026-09-12 (7) — item 16 re-scoped (the "pin" plan is a dead end) and item 15's `-Wshadow` audit
+
+No delivery change.
+
+- **TODO item 16** (restore the ~0.9 % `tg128` the block-13 RDNA3_5 fusion skip costs): the suggested
+  "pin `nwarps`/`rps`/item-split" fix does **not** apply.  Verified against the delivery: the fused and
+  unfused dense `ncols_dst==1` arms already share the same `mul_mat_vec_q_ksplit<…,has_fusion,…>`
+  template, the same `calc_nwarps(type,1,table_id)` (RDNA3_5: 2 for `Q8_0`, else 1), `rows_per_block` 1
+  and identical launch dims; the fused epilogue uses the same `ggml_cuda_op_silu_single` as the standalone
+  GLU (`op_silu`), and `up * silu(gate)` is commutative.  Two live candidates: **(a) codegen**
+  (`has_fusion` adds registers + a second `vec_dot` in the inner loop and may contract the `tmp` FMAs
+  differently) and **(b) the Q8_1 cache** (`common.cuh:1611` — keyed on the src1 tensor/layout only, not
+  the weight type, while `quantize_row_q8_1_cuda` takes `src0->type`; fusing changes which call fills it).
+  Next step: dump `tmp`/`tmp_gate` from the ksplit kernel under an env at `W=1`.  Record
+  `wip/strix-halo/rdna35-mmvq-fusion-purity/README.md` §9.
+- **TODO item 15** (`-Wshadow` for `src/`, which would have caught the Block-15 dead-mask bug): audited by
+  replaying the tree's own host compile commands for the 186 `src/` TUs with `-Wshadow` — **128 warnings
+  in 27 files**, 46 of them the risky `shadows a local variable` class (82 are benign `shadows a field`,
+  mostly constructor params).  `src/models/qwen4exp.cpp` is clean.  Revised proposal:
+  `-Wshadow -Wno-shadow-field-in-constructor` for `src/` + fix the ~46 local sites in their own cleanup
+  block.  Record `wip/shadow-warnings/RECORD-2026-09-12-shadow-audit.md` (full 46-site list).
+
+## 2026-09-12 (6) — QSA forced-sparse q8_0 residual (TODO item 4): it is not a width dependence; `embeddings_nextn` breaks logits-level `plain == draft-mtp`
+
+No delivery change.  Deep dive on the one open item-4 residual (forced sparse + `-ctk q8_0` + the
+`p5000` prompt: `plain a57bc13bbf2a` vs `n3 3124adfd2b94`).
+
+- **It is not a decode/verify width dependence.**  A new multi-step teacher-forced replay
+  (`wip/strix-halo/qsa-item4/mstep.cpp`) of the plain greedy sequence in the exact residual config is
+  bit-pure at every width: 200 positions, `W = 1..8`, with a spec-like batch+rollback schedule, with
+  unrelated tokens in the rolled-back rows, and with `n_rs_seq` 0 vs 2/3 — 0 mismatches.  The recurrent
+  snapshot rollback restore is exact and rolled-back content does not leak.
+- **Sharp signature:** pure at `--spec-draft-n-max 1` (MTP genuinely active, 31.1 t/s vs plain 23.7);
+  `n_max 2/3/5/7` all land on the *same* divergent text (first diff char 458).
+- **Ruled out:** `n_rs_seq`, `n_outputs_max` (`1+n_max`), CUDA-graph capture (`GGML_CUDA_GRAPH_OPT=0`),
+  and the chunked-GDN prefill boundary — the boundary is a real hazard (moving it by one token changes
+  the text) and it is why `GGML_CUDA_GDN_CHUNKED=0` moves the *plain* stream at char 49, but an
+  instrumented `gated_delta_net.cu` shows the actual chunked-GDN call sequence is **identical** between
+  the runs (144 calls, same sizes).  So `GDN_CHUNKED=0` / `DISABLE_FUSION=1` "reconcile" by perturbing
+  the trajectory, not by localising the cause (correcting the earlier record's reading).
+- **New concrete defect:** the MTP driver enables the target's `embeddings_nextn`
+  (`common/speculative.cpp:1431`), which makes qwen4exp's last-layer output gather defer
+  (`gather_now` in `src/models/qwen4exp.cpp`) so the last layer runs on the full ubatch — the **prefill's
+  last-position logits shift by a ULP** (`ad3acaa7…` vs `b624a79f…`).  That is a real logits-level
+  violation of the `plain == draft-mtp` guarantee (item 4(a)), though it does not by itself flip the
+  replayed tokens.
+- **Disposition:** item 4 stays open, re-scoped to a driver-level divergence; the next step is a faithful
+  mini-MTP driver (target + draft, per-step target-logit dump), since everything cheaper is exhausted.
+  Records: `wip/strix-halo/RECORD-2026-09-12-qsa-item4-deep-dive.md`; analysis `GREEDY-PURITY.md` §18;
+  `TODO.md` item 4.
+
+## 2026-09-12 (4) — QSA sparse-regime width purity on gfx1151: items 4/7 re-measured (item 4 re-scoped, item 7 closed)
+
+No delivery change.  Re-measured the two QSA-*sparse*-regime width dependences that TODO item 4 recorded
+on 2026-09-11 (on the 3-GPU gfx1201 box, sparse arm forced) — both were measured **before** the
+2026-09-12 block-13 RDNA3_5 mmvq-fusion amendment, and **neither reproduces on gfx1151 with the current
+delivery**:
+
+- the fused indexer score **is** byte-identical to the per-op chain: a 512-token forced-sparse A/B
+  (qwen4exp UD-IQ4_XS, f16/bf16, `P=5000`) gives the same text for `GGML_CUDA_QSA_INDEXER_SCORE` and
+  `_CACHE` at their defaults and at 0 (`0d29890e0f04` f16), and the `CACHE=2` unfilled-pool probe does
+  move the W=1 text (so the fused path is the one running);
+- the recorded "residual split" was the block-13 single-token mmvq fusion (§25): the current delivery is
+  `plain == n3 = cb2912b186b9`, and the pre-fix impurity reproduces exactly with
+  `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1` (`471ea250f8e2` vs `cb2912b186b9`).
+
+**Default gfx1151 configs are pure**: shallow dense decode on every tested KV type (q8_0 included) and
+deep sparse decode at ~74K (f16 `83e0ed0f0f80`, q8_0 `7205399d367d` — the maintainer's `-ctk q8_0`
+config).  Item 7 (the "dense decode at every depth" workaround) is therefore **closed** — the 64K
+crossover stays.
+
+One residual remains and is **open/unlocalised**: a prompt-dependent q8_0 width dependence in the
+*forced*-sparse shallow regime (`LLAMA_QSA_DENSE_DECODE_UNTIL=0`, `/tmp/p5000.txt`: `plain a57bc13bbf2a`
+vs `n3 3124adfd2b94`).  `LLAMA_QSA_SPARSE_FA=0` does not reconcile it (the standard masked-FA path is
+affected too), `LLAMA_QSA_OFF=1` does, and `GGML_CUDA_DISABLE_FUSION=1` / `GGML_CUDA_GDN_CHUNKED=0` each
+perturb to purity.  It is a ULP-level effect (the default deep q8_0 config is pure).  Next step: a
+node-dump/op-trace rebuild to diff the W=1 and W=4 graphs.  Item 4 is re-scoped to this.  Record:
+`wip/strix-halo/RECORD-2026-09-12-qsa-sparse-width.md`; analysis `GREEDY-PURITY.md` §18; docs updated
+(`AGENTS.md`, `TODO.md`).
+
+## 2026-09-12 (5) — item 5(f): the block-13 fused MoE gate+up+GLU arm still wins on Strix Halo
+
+Re-measured on the current delivery tip (35B-A3B Q4_K_M, 1 GPU, interleaved
+`GGML_CUDA_DISABLE_MOE_MMQ_FUSION` off/on ×3, pp2048 and pp16384): the fusion is still worth
+**+0.6 %** prefill at both sizes (pp2048 1711.9/1710.2 vs 1710.1/1701.4 t/s; pp16384 1485.3/1485.8 vs
+1476.4/1478.6 — the first p2048 off-run 1733.3 is a warm-up outlier) and the fusion fires, so TODO item
+5(f) is **closed: keep the arm**.  Docs-only; no delivery change.
+
+## 2026-09-12 (3) — TODO.md audit: the Active list is active-only, closed items moved out, state header refreshed
+
+Docs-only tracker cleanup (no delivery change).  `TODO.md`'s *Active* list had accumulated finished-work
+footnotes, so the file no longer told a reader what was actually open: item 2 was an empty heading for the
+fixed issue-25 GDN divergence (heading deleted; already in Closed), item 1's Block-15 dense-arm blocker
+narrative was a Closed record repeated in Active (trimmed to the live 12th-re-cut + beta-window state),
+item 6 carried the completed gfx1201 port and Phase-2.5 narrative (moved to Closed, leaving only the open
+gfx1100/gfx1151 legs), item 5(e) (gfx1100/gfx1201) duplicated item 6 and was dropped, and the state header
+still named the superseded canonical tip `124abba9e` / tree `d7c8e898…` (now `13af95ac1` /
+`f4791066f4…`, matching `make-patches.sh`).  Added the Closed one-liner for the 2026-09-12 (2) block-13
+RDNA3_5 mmvq-fusion purity amendment and a new Active item 16 for its perf follow-up (make the fused
+`ncols_dst==1` kernels reproduce the standalone reduction rather than skip the fusion).  Also prepared the
+post-compaction brief `wip/strix-halo/HANDOVER-2026-09-12-remaining-gfx1151.md`.
+
+## 2026-09-12 (2) — block 13: the RDNA3_5 single-token-only mmvq fusions are not decode/verify bit-identical (folded)
+
+**Canonical tip `13af95ac1`** (tree `f4791066f4a582316b1ca95f51c96cd10b905ef7`), 15 blocks,
+clean-apply strict 15/15 `git am` with 0 whitespace warnings and the applied tree equal to the
+canonical one.  One block amendment (block 13), one net-patch regeneration.  Full record:
+`GREEDY-PURITY.md` §25 and the (now folded) `wip/strix-halo/rdna35-mmvq-fusion-purity/README.md`.
+
+**Block 13 — the two RDNA3_5 single-token-only mmvq fusions are skipped on gfx1151.**  The
+2026-09-11 block-13 band work made the *standalone* mmvq path `W = 1..8`-uniform, but on gfx1151 two
+**single-token-only** fusions still ran at `W=1` only and their fused kernels do not reproduce the
+standalone arithmetic, so a 1-token decode and an n-token verify of the same layer were not
+bit-identical (the issue-25 "block-13 `n_q=1` short-K mmvq variance"): the dense gate+up+GLU mmvq
+fusion (`mul_mat_vec_q<..., ncols=1, has_fusion=true>`; `mmvq.cu` restricts fusion to `ncols_dst == 1`)
+and the MoE weighted-down tail `ggml_cuda_mul_mat_id_weighted_rdna3_5` (RDNA3_5-only, single-token by
+its shape fingerprint).  Measured (qwen4exp UD-IQ4_XS, `P=100`, f16): `W=1` `8abc6206` vs `W=8`
+`453eaa61`; each fusion moves `W=1` independently and only both together equal the `W=8` standalone.
+The fix guards the six `{op,op,GLU}`/`{op,bias,op,bias,GLU}` matchers in `ggml_cuda_try_fuse` (keeping
+the band-uniform `MUL_MAT_ID`/MoE fusions) and `ggml_cuda_mul_mat_id_weighted_rdna3_5_ok`, both gated
+on RDNA3_5 unless `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1` (A/B).  Post-fix `W = 1,2,4,8` is
+one hash per config: qwen4exp f16 `453eaa61`, q8_0 `113696b9`, MoE 35B-A3B `18999a78`; the 27B dense
+(`e165ef98`) was already pure and is unchanged.  Cost ≈ −0.9 % `tg128` on qwen4exp (25.53 vs 25.77
+t/s), prefill flat — the §19 trade; the follow-up is to make the fused `ncols_dst==1` kernel reproduce
+the standalone reduction instead of skipping the fusion.  The gfx1201 path is untouched
+(`GGML_CUDA_CC_IS_RDNA3_5`-only).
+
+**Placement.**  The dense GLU matchers are upstream at the fork point and the weighted-down `_ok` is a
+block-13 addition, so the whole fix lands in block 13 — not block 00 (which is generated from the fork
+point and touches only `fattn-common.cuh` + Vulkan shaders, and the weighted-down matcher does not
+exist there), and not block 14 (which owns the weighted-down *matcher*; guarding in `_ok` keeps block
+13 self-contained and avoids a mid-chain rebase of block 14's overlapping `ggml-cuda.cu` hunks).
+
+**Regeneration.**  Rebuilt the canonical chain by `scripts/apply-all.sh` at `9113cc188` from the
+pre-amendment `main` patches, amended block 13 (`f5d0cdd25`), replayed block 14 (`13af95ac1`) and ran
+`scripts/make-patches.sh`; blocks 00-12 and 14 patch bodies are byte-identical apart from the
+`From`/`index`/hunk-header lines, only block 13's body changed.  `rdna-boosts-all.patch` regenerated
+(`git diff 9113cc188 13af95ac1`) and verified equal to the regenerated `patches/` applied at the base.
+
+**Beta block-15 re-cut (12th).**  Re-cut on this base: base `13af95ac1`, beta tip `888a59ee0`, tree
+`476d2d1e95947de7cc8cd806c40efc0f01927cd3`; the exported patch is byte-identical to the 11th re-cut
+apart from the `From <sha>` line (block 13's amendment touches only `ggml-cuda.cu`/`mmvq.cu`, which the
+block-15 patch does not touch), and strict `git am` applies.  Beta-tree revalidation: build clean;
+width probe `W = 1,4,8` one hash on qwen4exp f16 (`453eaa61`) / q8_0 (`113696b9`); a same-seed greedy
+run is byte-identical delivery-vs-beta; `FLASH_ATTN_QSA` + `GATED_DELTA_NET` pass.  See
+`beta/block-15-campaign-wins/BETA-TESTING.md` (12th-re-cut section).
+
+## 2026-09-12 — block 13: the fused shared-expert epilogue is column-blocked (the item-5 cost repaid), and the routed-compact MoE MMQ claim re-verified
+
+**Canonical tip `124abba9e`** (tree `d7c8e8984b8bd65838d8ae58c0f5de449d9c5d4d`), 15 blocks, clean-apply
+strict 15/15 with 0 whitespace warnings and the applied tree equal to the canonical one; the sim build
+(`/tmp/simx`) reproduces the MoE probe gate `ac8825358d9adfda` at `W = 1,4,8`.  One block amendment
+(block 13), one staged-beta re-cut (11th), one validation record (the gfx1201 routed-compact probe).
+Both items come from `TODO.md` items 10 and 6, worked to the brief
+`wip/items-6-10-wrapup/HANDOVER-2026-09-12-items-6-and-10.md`.
+
+**Block 13 — `shexp_down_gated_q8_0` is now column-blocked (band-internal).**  The 2026-09-11 band
+amendment made the fused shared-expert epilogue serve the whole decode/verify band but launched it as
+`grid = (nrows, ncols)` — one block per `(output row, token)` — so the down-weight row was re-read once
+per token and the whole block (two barriers, the cross-warp reduction and the epilogue) was duplicated
+per token.  On the reachable geometry this is severe: for Qwen3.6-35B-A3B (`k_down` 512 → 16 k-blocks,
+`vdr` 4, `nwarps` 8) `blocks_per_iter` = 128 > 16, so **only warp 0 of 8 does any work** (88 % of the
+block idles) and the weight row is read 8x over at `pl = 8`.
+
+The kernel is now templated on `ncols_dst` as well, with the **token loop inside the k-block loop**, a
+per-token accumulator per thread and the weight block read once per `(row, k-block)` for the whole band;
+`grid` is `(nrows)` with the band block-internal.  Two invariants are preserved exactly, which is what
+makes the change numerically invisible:
+
+* `nwarps` stays pinned to the single-token value (`calc_nwarps(GGML_Q8_0, 1, table_id)`), because it
+  sets `blocks_per_iter` and hence the down-projection reduction order;
+* each token keeps the single-token path's per-thread accumulation order *and* the same cross-warp
+  reduction order (serial `sh_down[l]` adds in `l` order, then `warp_reduce_sum`), so `decode == verify`
+  holds by construction, not by measurement.  The `__fmul_rn` epilogue (no FMA contraction) and the
+  `dst[t*nrows + row]` layout are unchanged.
+
+Perf (`llama-batched-bench`, 35B-A3B Q4_K_M, 3-GPU tensor, `-npp 2048 -ntg 128 -npl 1,2,4,8`, f16 KV,
+two interleaved reps, `pl` is the batch width = `n_max + 1`):
+
+| `pl` | before (fused) | after (fused) | unfused reference |
+|---|---|---|---|
+| 1 | 95.84 / 95.64 | 95.57 / 95.55 | 93.55 / 93.11 |
+| 2 | 167.69 / 167.48 | 168.65 / 168.45 | 165.88 / 165.02 |
+| 4 | 299.07 / 299.49 | **306.52 / 305.79** | 299.86 / 299.96 |
+| 8 | 461.00 / 461.09 | **475.41 / 473.07** | 472.65 / 470.72 |
+
+i.e. `pl 8 +3.1 %`, `pl 4 +2.4 %`, `pl 2 +0.6 %`, `pl 1` flat — and the fused default is now **ahead of**
+the unfused `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` reference at every width, where before it lost 2.4 % at
+`pl 8`.  With `--spec-draft-n-max` capped at 7 the payout band is exactly `pl <= 8`, the widest
+*supported* verify batch.
+
+Numerical invisibility was proven with a **direct old-vs-new A/B** (both `libggml-hip.so` builds of the
+same tip kept side by side and swapped in, the `tools/sobench.sh` idiom) rather than by trusting
+documented values:
+
+* MoE probe (`/tmp/lw-f2`, 1 GPU, `SPLIT=layer`, `RS=0`, `CB=0`, `P=256`, `p0long.txt`): fused
+  `W = 1..8` **all `ac8825358d9adfda`** before and after; unfused all `bd138ad2326fbbf2` before and
+  after.  Both are the documented gate values, so the fix is a **no-op at the gate config** — the
+  strongest available control.
+* The §5 acceptance matrix is unchanged: qwen4exp tensor all-W `dcf1ae667f730879`, layer
+  `3adeb313042a871b`; 27B layer `4089b4d40b91090c`, tensor `91434ea90f2cbfa0`.
+* §19 text gate on 35B-A3B (Protocol A prompt, 96 tokens, 1 GPU, f16 KV):
+  `--spec-type none == draft-mtp n_max 3 == n_max 7` = `68c0a24ed8d4` (447 chars) before and after.
+* MTP acceptance (Protocol A, `n_max 3`, `n=96`): `0.87179` before and after (identical
+  `68 accepted / 78 generated`, mean len 3.62).
+* `test-backend-ops`: `FLASH_ATTN_EXT`, `FLASH_ATTN_QSA`, `GATED_DELTA_NET` all pass on ROCm 0/1/2.
+* The change also leaves qwen4exp's documented sparse text `804de0576868` untouched (re-checked while
+  validating the re-cut).
+
+**Beta re-cut (11th).**  Base `124abba9e` → beta tip **`a90f75896`**, tree
+**`ed6ee74df8b690c5a1584adb3f85c45eda70a09b`**, patch still **3 811 lines**; `git am -3` applies with no
+conflict and the exported patch differs from the 10th re-cut **only in the `From <sha>` line** (block 13's
+amendment does not touch any file the beta patch hunk-touches).  Round-tripped (fresh worktree at the base
++ `git am -3` → identical tree), builds clean (`/tmp/blk15z/build-rec11`), and the smoke gates reproduce
+the 10th re-cut's values exactly: qwen4exp f16 sparse text `804de0576868`, QSA oracle sparse `6.5394` /
+dense `6.5377`.
+
+**Item 6 — the gfx1201 routed-compact MoE MMQ ("Phase 2.5") re-verified; two corrections.**  The port's
+in-code claim is "*Numerics are bit-identical to the plain `mul_mat_q` path (same `mul_mat_q_process_tile`,
+same per-tile accumulation order; only the tile enumeration differs)*".  Re-checked on the current tip
+with `GGML_CUDA_DISABLE_MMQ_ROUTED` on/off:
+
+* **Byte-identity holds, on two different expert types/J bands.**  qwen4exp (IQ4_XS, J=64): same-seed
+  greedy text `804de0576868` both ways; 35B-A3B Q4_K_M (Q4_K, J=32): `68c0a24ed8d4` both ways.  Probe
+  hashes `W = 1..8` identical on both models under both settings (MoE `ac8825358d9adfda`, qwen4exp tensor
+  `dcf1ae667f730879`), and the MoE MTP acceptance is `0.87179` either way.
+* **Correction 1 — the brief's premise was wrong.**  It assumed the 35B-A3B Q4_K_M does *not* take the
+  routed path and could serve as the "plain" control.  It does: `mmq_rdna3_5_id_use_compact` accepts
+  Q4_K/Q5_K/Q6_K, and a `rocprofv3 --kernel-trace` count shows **480
+  `mul_mat_q_routed_compact<(ggml_type)12, 32, false>`** launches per `pp512`/`ub512` run (type 12 =
+  Q4_K, J = 32), i.e. the Q4_K experts take it too.  Both available MoE models therefore exercise the
+  compact dispatch — which *strengthens* the validation to two type/J bands but removes the proposed
+  control.  The control is instead the **prefill-only reach**: a `tg` run shows **0** compact launches
+  and **0** descriptor-builder launches, because decode and the verify band go through mmvq
+  (`ncols_dst <= MMQ_MAX_BATCH_SIZE`), which is also why the compact dispatch cannot affect width
+  purity.
+* **Correction 2 — the env opt-out does not isolate the whole port.**  `GGML_CUDA_DISABLE_MMQ_ROUTED=1`
+  disables only the compact *enumeration*; the per-expert J selection (`mmq_rdna3_5_id_get_J` in
+  `mul_mat_q_switch_J`) stays active in both arms (the code says so explicitly).  So ON==OFF proves the
+  compact enumeration is arithmetic-neutral, not the J selection.  The J change is arithmetic-neutral by
+  construction (J is the output-row tile width; an output element's accumulation is over K only), and it
+  is additionally covered by the delivered hash table, the MoE probe/text/MTP gates above and
+  `test-backend-ops -o MUL_MAT_ID` (which also passes).
+* Perf claim re-measured (interleaved, 2 reps, ub2048, 3-GPU tensor, f16 KV, `-r 2`): qwen4exp pp512
+  **+11.1 % / +9.3 %**, pp2048 **+5.6 % / +4.6 %**, pp8192 **+4.5 % / +3.1 %**, pp16384
+  **+4.0 % / +3.6 %**, tg128 flat (51.57 vs 51.58); 35B-A3B pp512 **+5.1 % / +5.3 %**, pp2048
+  **+7.7 % / +7.8 %**, pp8192 **+7.4 % / +7.2 %**, pp16384 **+6.9 % / +7.0 %**, tg128 flat (99.61 vs
+  99.45).  The 2026-09-06 record's "+4-8 % prefill, tg flat" is reproduced on both models.
+
+**One measurement caveat recorded for the follow-ups.**  The cross-day comparison against the port's
+2026-09-06 *absolute* numbers is not usable: qwen4exp `pp2048` (f16 KV, same config) ran
+2042.6 -> 1933.7 -> 1906.1 -> 1822.0 -> 1730.8 t/s over one session (a monotone -15 % drift while the box
+sits at 141 GiB buff/cache with swap full), while the 35B-A3B `pp512` control reproduced to 0.2 % in the
+same window (5372.2 vs 5360.1/5353.9).  Only same-session interleaved brackets are meaningful for this
+model's prefill; the same warning is now on `TODO.md` item 3 (the qwen4exp `iq4_nl` prefill-delta item,
+which is an 8-12 % claim measured on this same axis).  A quick QSA-arm check in the same window
+(`LLAMA_QSA_OFF=1` +2.2 % pp2048 / +7.4 % pp8192, `LLAMA_QSA_SPARSE_FA=0` +2.3 % / +2.7 %) shows the QSA
+machinery is *not* the explanation for the drift.
+
+**Pushing/tips:** `scripts/make-patches.sh` default tip -> `124abba9e`; `rdna-boosts-all.patch`
+regenerated by hand (22 347 lines, 115 files, `git apply --check` clean at `9113cc188` and a full apply
+reproduces the canonical tree).
+
+## 2026-09-11 (12) — mixed K/V types hard-rejected, `--spec-draft-n-max` capped at 7, and issue #25's GDN divergence re-verified
+
+**Canonical tip `484231cb9`** (tree `fc3c73da4ac68e92348043b992fb963b006e14df`), 15 blocks, clean-apply
+strict 15/15 with 0 whitespace warnings and the applied tree equal to the canonical one (sim build
+verified).  Two block amendments, both from maintainer decisions of 2026-09-11:
+
+**Block 14 — mixed K/V cache types are now HARD-REJECTED for every model.**  Upstream enforces
+`type_k == type_v` for MLA/DeepSeek4 only; the condition is dropped, so `params.type_k !=
+params.type_v` now fails context creation for every architecture with
+
+```
+E llama_init_from_model: models require the same K and V cache types, got K=q8_0 and V=f16; set
+  --cache-type-v to match --cache-type-k (both default to f16)
+```
+
+Rationale (measured, `TODO.md` accepted limitations / `GREEDY-PURITY.md`): every mixed pair is
+1.7–3.6× slower than the same-type equivalent and never smaller, and the attention path — including the
+split/flash-attention one, whose type gate lives a few lines above — assumes `type_k == type_v`.  Both
+types default to f16, so only an explicit `--cache-type-k`/`-v` can trigger it.  Verified: `-ctk q8_0`
+(V=f16) and `-ctk q8_0 -ctv q4_0` both fail with the message above; `-ctk q8_0 -ctv q8_0` runs normally.
+
+**Block 01 — `--spec-draft-n-max` is capped at 7** (a clamp with a visible notice, **not** an error,
+per the maintainer's instruction).  A verify batch decodes `n_max + 1` query rows and the HIP
+flash-attention chooser switches the band from the tile kernel to the MMA/WMMA kernel above 8 rows
+(`fattn.cu`, the `Q->ne[1] > 8` switch); the two kernels are not bit-identical, so a deeper draft makes
+decode and verify disagree and greedy output can change between `--spec-type none` and `draft-mtp`
+(upstream master has the same class of boundary).  The guarantee published in `GREEDY-PURITY.md` §11 is
+therefore enforced rather than documented:
+
+* the clamp lives in **`common_init_from_params`**, not in the argument parser, because a warning
+  emitted while parsing is *below the default log threshold* and never reaches the user (verified: the
+  control `--log-mmap` combination warning is equally invisible; `--log-verbosity 4` shows both) — it
+  runs before the model/context and before the speculative engine are created, so all of them see the
+  capped depth;
+* the notice is emitted at `LOG_ERR` level deliberately (llama-cli's default verbosity hides `W` but
+  shows `E`; `common_fit_params` uses the same pattern for its non-fatal abort notice) and **names the
+  escape hatch**: `LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0` keeps the configured value (with a `W` notice);
+* the help string now reads "(default: 3, max: 7)".
+
+Verified end to end on the 27B (2-GPU): `--spec-draft-n-max 12` → the notice **at the default
+verbosity** and the GDN log line showing `K=8` (= n_max 7 + 1); `LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0` →
+`K=13` (= 12 + 1, i.e. the env really reaches the kernels) with the "keeping it" notice; `n_max 7` and
+`n_max 4` are silent and give `K=8`/`K=5`.  Note (documented in the code): unclamping to `n_max > 15`
+re-introduces the K-dependent chunked-GDN boundary as well.
+
+**Issue #25's GDN plain-vs-spec divergence: already fixed, re-verified, and the records corrected.**
+A concurrent gfx1151 session reported that `--spec-type none` and `draft-mtp` disagreed through the GDN
+chunked prefill.  That was fixed on 2026-09-11 by block 02's **K-independent whole-batch chunked
+prefill** (`GGML_CUDA_GDN_ALIGN_BOUNDARY` and both K-dependent branches deleted); the `TODO.md` item and
+the `wip/issue-25-mtp-batch-width/` status lines still described the superseded opt-in gate, and are now
+corrected.  **Fresh gate on the current tree** (27B Q8_0, 2-GPU `-sm tensor -ts 1/1`, `p0long.txt`, 512
+greedy tokens, `-c 8192 -ctk f16 -ctv f16 -fa auto`): `--spec-type none == draft-mtp n_max 1 == 4 ==
+5`, all `299566b902bb` (2727 chars) — byte-identical.  Control: `GGML_CUDA_GDN_CHUNKED=0` changes the
+plain text (`60777872b890`), which is the expected chunked-vs-sequential kernel difference (and that
+switch remains the fully-snapshot-safe fallback), not a plain-vs-spec divergence.
+
+**Beta:** tenth re-cut — base `484231cb9` → beta tip **`a796a1d49`**, tree
+**`b48565e69f77f0c20a20cd75d87c2559d11e6de2`**, patch **3 811 lines**; `git am -3` merged the new
+`llama-context.cpp` region **without a conflict**, and the diff vs the ninth re-cut is exactly the three
+new delivery files (`common/arg.cpp`, `common/common.cpp`, `src/llama-context.cpp`) — no block-15 content
+changed.  Beta testers must pass matching `-ctk`/`-ctv` from now on (the hard reject applies to the beta
+too); see `beta/block-15-campaign-wins/BETA-TESTING.md`.
+
+## 2026-09-11 (11) — Block 15's dense-arm blocker fixed (a shadowed variable); no delivery change
+
+**Delivery unchanged** (`main` still the 15-patch set at canonical tip `6d3155faa`, tree
+`0c3f0c2c2f4e7439d9489d45573a4021a8eee106`): the defect lived in block 15's own `build_attn_qsa` dense
+path, which is **not** in the delivery (the delivery has no `if (kq_mask != nullptr)` wrapper and no outer
+declaration), so nothing in `patches/` changes.  Only the staged beta patch is amended — the ninth re-cut.
+
+**Root cause (one line, found by instrumentation after every hypothesis in the handover was excluded):**
+the V2/V3 refactor wrapped the top-k mask chain in `if (kq_mask != nullptr) { ... }` and declared an
+*outer* `ggml_tensor * kq_mask_top_k = nullptr;`, leaving the chain's own
+`ggml_tensor * kq_mask_top_k = ggml_set_rows(...)` inside the block as a **new local**.  The chain was
+therefore built whenever the mask existed, but its result never reached the attention — `build_attn_mha`
+received the outer `nullptr`.  Consequences: the chain's nodes were unreachable from the graph output (so
+`ggml_build_forward_expand` never emitted them), the packed mask lost its only consumer (the allocator
+left it unallocated, and block 15's own `if (self_kq_mask && self_kq_mask->buffer)` guard in
+`llm_graph_input_attn_kv::set_input` then skipped `set_input_kq_mask`), and the dense arm attended with **no
+mask at all** — a full causal leak.  Fix: drop the inner `ggml_tensor *` so the block assigns the outer
+variable.
+
+**How it was isolated** (full detail: `wip/block15-dense-arm/HANDOVER-2026-09-11-block15-dense-arm.md`):
+the dense arm also differed in a plain text run; it *still* differed with `-fa off` (⇒ not the FA kernels,
+not V3's derived-mask arm); `beta/block-15-campaign-wins/ab/w4-revert.patch` + rebuild changed nothing (⇒
+not W4); `LLAMA_KQ_MASK_DERIVED=0` removed the resolver's derived-mask warnings (a working positive
+control) but not the leak (⇒ not V3); then the node dump
+(`wip/kv-quant-purity-followups/tools/node-dump-instrumentation.patch`, `GGML_CUDA_NODE_DUMP=1/2` +
+`/tmp/nodedump_on`, `--verbose` needed for the ggml-level INFO lines) showed the delivery's dense prefill
+consuming `attn_inp_kq_mask` 36 times (12 indexer layers × 3 devices) while the beta consumed it **zero**
+times and emitted **no** `FILL`/`SET_ROWS` chain nodes at all; a temporary `[QDM]` log then printed
+`kq_mask=1` (the guard passes) with `outer_top_k=0` (what the attention reads is still null) — the
+shadowing, in one line.  A cheap by-product instrument is now the first thing to try for any "is the model
+seeing the future?" question: **random text** (`/tmp/rand-text.txt`, 40 000 random words) — a model that
+can see the target scores ≈1 on noise, where the broken beta gave `1.0205` and the delivery `19.0589`.
+
+**Gates after the fix (identical configs, against the delivery build):**
+`tools/qsa-ppl-oracle.sh tensor f16` → sparse `6.5394` / dense `6.5377` (= the delivery; the blocker's
+`1.0558` is gone); dense-arm greedy texts byte-identical to the delivery — tensor f16 `2daa19579316` (720
+chars), tensor `iq4_nl` `3c46e47ab345` (680), layer f16 `e656b50f2cc8` (685), layer f16 `-fa off`
+`b96459bf02ca` (703); random-text PPL `19.0589` @ c2560/ub2560 and `7.9682` @ c4096/ub512 (= the delivery);
+production arm untouched — sparse f16 `804de0576868`, q4_1 `886292b17a93`, `plain == n_max 3 == n_max 7`,
+MTP f16 `acc 0.56028` / pos-1 `(0.681, 0.553, 0.447)` bit-identical to the delivery on the same command,
+`LLAMA_QSA_OFF=1` `6.5376`; the KV reserves are unchanged by the fix and still show the campaign's
+mask-elision win (`1600.00 + 600.00` MiB at c204800/ub512 f16 vs the delivery's `1600.00 + 1800.00`, in
+both arms); backend suites OK.  The pre-existing `iq4_nl` W2 sensitivity is unchanged (its greedy text
+`fcb2d47f94cf` and MTP `0.46203`/`(0.717, 0.434, 0.226)` stay off the delivery's values, and
+`GGML_QSA_DERIVED_* =0` restores them exactly — verified) because the sparse arm never enters the fixed
+block.
+
+**Beta:** ninth re-cut — base `6d3155faa` → beta tip **`3712e2dc1`**, tree
+**`e39f8c2b6f0593113b93c4e57c512bc7373a2250`**, patch **3 811 lines** (the 8th re-cut + 1 diff line + the
+commit-message paragraph); `git am -3` on a fresh base reproduces the tree exactly.  Records:
+`beta/block-15-campaign-wins/{README,BETA-TESTING,HANDOVER}.md`; the revalidation pointer in
+`TODO.md`.
+
+**Lessons recorded in `GREEDY-PURITY.md` §23:** (1) a graph tensor with no consumer is *silently* dropped —
+the allocator leaves it unallocated and the input fill is skipped, so "the input is in the graph" proves
+nothing; (2) in a refactor that adds an outer declaration, an inner `Type * name = ...` **shadows** it and
+the result is dead code that still compiles — `-Wshadow` (not currently enabled) would have caught this
+class outright; (3) when a chain's nodes are missing from an executed-graph dump, suspect the *graph
+builder* (reachability), not the allocator.
+
+## 2026-09-11 (10) — `iq4_nl` becomes a first-class FA KV type (F3 step 2), and the beta re-cut finds a Block 15 blocker
+
+**Canonical tip `6d3155faa`** (block 08 amended a fifth time, block 14 a fifth time), net tree
+`0c3f0c2c2f4e7439d9489d45573a4021a8eee106`, 15 blocks, clean-apply strict 15/15 with 0 whitespace
+warnings and the applied tree equal to the canonical one; the sim build's generated text is
+byte-identical to the canonical build's (only its `build : <sha>` banner line differs, because the sim
+chain has its own commit SHAs) and its `iq4_nl` text gate reproduces the canonical value.  Delivery
+`main` carries the regenerated set (`rdna-boosts-all.patch` 22 233 lines, 115 files, +17 203/-935) and
+the **8th** block-15 beta re-cut (`d0f71b2e8`, tree `39540b7f4fd8e8569dee64bfa3ee84bf1b20e75d`, patch
+3 787 lines).
+
+**The task: F3 step 2 = `iq4_nl`** (brief
+`wip/kv-quant-purity-followups/HANDOVER-2026-09-11-f3-step2-iq4_nl.md`) — the last sub-`q8_0` KV type,
+and the smallest cache of the set (288 MiB at c=32768 on the 4B, tied with `q4_0`, -72 % vs f16).
+Before this, `iq4_nl` produced **no flash-attention call at all**: the predicate's `default:` clause
+rejected it, the FA probe then disabled FA for the whole context.  After: **4B pp512 2269.8 -> 7931.8
+t/s, tg32 48.5 -> 95.0** (`q4_0` 7913.1/96.8, f16 7981.7/99.7); dense models unchanged (27B 3-GPU
+tensor pp8192/16384 within 0.7 % of f16, 4B pp8192 -2 %); `-sm tensor` now accepts the type.
+
+**The mechanics were bookkeeping, not a new kernel** — the tile/MMA families stage K/V through
+`ggml_get_to_fp16_cuda`, which already covers `iq4_nl` upstream.  What was missing: the predicate case,
+the **15 `fattn-vec-instance-iq4_nl-*.cu` pairs** (upstream's generated cross product never had them
+because `TYPES_KV` did not list the type - they ship with that list now, and `FA_ALL_QUANTS` gains its
+15 pairs so that build mode stays complete), the K-side `vec_dot_fattn_vec_KQ_iq4_nl` (perm-based
+`get_int_from_table_16` lookup, no bias) and V-side `dequantize_V_iq4_nl` (the q4_0/q5_0 nibble layout,
+the `kvalues_iq4nl` table, no `-8`/`-16`) in `fattn-common.cuh`, the three CMake default lists, and - the
+**one real latent bug** - the non-contiguous FA staging converter: `ggml_get_to_fp16_nc_cuda()` returned
+`nullptr` for `iq4_nl` and `launch_fattn` called it, so any K/V *view* would have been a null-pointer
+call.  Unreachable before (no FA path for the type), instant on the first `iq4_nl` backend-op case: the
+very first `-o FLASH_ATTN_EXT` run **SIGSEGV'd in `launch_fattn<64,2,1>`**.  Fixed with
+`dequantize_q4_nl` + all three NC switches.
+
+**Gates** (final binary): `FLASH_ATTN_EXT` **5935/5935** (was 5599 - the 336 `iq4_nl` cases now run,
+incl. mask/sink/alibi/softcap/permute/view variants), `FLASH_ATTN_QSA` **22/22** (two new cases at the
+model's own geometry D=256 / gqa=12), `GATED_DELTA_NET` 46/46; `W=1..8` pure on 4B (1 GPU, both `RS`),
+27B (both splits), MoE, gemma-4-E4B and qwen4exp (both splits, default **and** QSA-forced); qwen4exp text
+`plain == n_max 3 == n_max 7` = `acd18ad2d55c` (tensor) / `a38a6e2d8efa` (layer) with the f16/q4_1
+controls unmoved; MTP `n_max 3` 0.52727 (pos-1 0.757) and 27B f16 0.82716; perplexity oracle qwen4exp
+tensor `iq4_nl` sparse 6.5244 / dense 6.4930 (controls within +-0.006, `iq4_nl` +0.031).  The vec-family
+helpers are NVIDIA-only code on AMD, so they were validated by **forcing** the chooser to VEC with a
+temporary env-gated instrument: 5935/5935 again with 880 forced hits (the instrument was reverted before
+landing).
+
+**Two open items, both filed** (`TODO.md`): (a) qwen4exp prefill is ~8-12 % slower for `iq4_nl` than for
+f16/`q4_0`/`q4_1` at pp8192+, growing with context, even though `q4_0` has the identical byte layout —
+`rocprofv3` shows it is **not** this amendment's code (QSA `iq4_nl` 1318.5 ms vs `q4_0` 1335.8 ms, same
+VGPR/LDS/occupancy; dequant kernels identical at 1.2 ms; the executed graph identical at 1010 nodes, 0
+diff; the traced kernel sum *lower* for `iq4_nl`), so the follow-up targets the host/launch side (the
+per-type indexer op counts and the dense/sparse topology-flip sync); (b) **Block 15's
+`LLAMA_QSA_SPARSE_FA=0` dense masked arm is broken for every KV type** (PPL ~1.05 vs the delivery's
+6.49-6.55) — found by the 8th re-cut, pre-existing (the 7th re-cut reproduces it), not fixable by any
+Block 15 gate, and a **promotion blocker** because that arm is this repo's quality oracle; the beta
+records (`BETA-TESTING.md` §4c/§4d) now carry the evidence and add the oracle to the beta gate list.  The
+re-cut also confirmed the beta's production path is byte-identical to the delivery (f16/q4_1 texts,
+`iq4_nl` text, MTP acceptances, width purity, `FLASH_ATTN_QSA` 22/22, `FLASH_ATTN_EXT` 5940/5940,
+`LLAMA_QSA_OFF=1` PPL) apart from W2's ULP-level derived-bias sensitivity on `iq4_nl` (benign: identical
+sparse-arm PPL).
+
+## 2026-09-11 (9) — the QSA kernel gets an oracle, four more KV types, and a head-group fix (quality)
+
+**Canonical tip `a0cd6ce02`** (block 14 amended a fourth time; block 13 `1a88c92f5`), net tree
+`0966e66731a4c3da85ffd96525688865a89242cd`, 15 blocks, clean-apply strict 15/15 with 0 whitespace
+warnings, applied tree == canonical, sim build clean and its coherence hash equal to the canonical
+build's (`1c5d32ac537d`).  Delivery `main` carries the regenerated set (`rdna-boosts-all.patch`
+21 750 lines) and the 7th block-15 beta re-cut (`8a0e2eb3f`, tree `764808b4c`, patch 3 774 lines).
+
+**The task was "let the fused sparse QSA op read the quantized caches" — it turned into a correctness
+finding.**  Two changes, one amendment:
+
+* **Quantized KV for QSA.**  `q4_0`/`q4_1`/`q5_0`/`q5_1` rows are now dequantized to F16 while a tile is
+  staged (`get_dequantize_V<type_KV, half, 4>`, the idiom the vec FA kernel and the lightning indexer
+  already use), with the four types threaded through the dispatch, `ggml_cuda_flash_attn_qsa_supported()`
+  and `qsa_kv_native`.  Effect on 3x R9700 `-sm tensor`: `q4_1` prefill 2076.4 -> **2384.2 t/s at
+  32 768** (dense masked reference 2078.1, f16 sparse 2380.9) — the quantized cache now tracks f16
+  exactly, at pp8192 2404.1 (f16 2376.5) — i.e. the ~13.8 % long-context prefill the type used to lose
+  is recovered, which was the measured prize that started this.
+* **The head-group fix (the important half).**  A QSA block stages ONE K/V tile into shared memory and
+  every warp reads it, so all of the block's q-heads must map to the same K/V head.  The chunking was
+  `head_base += QSA_MAX_HEADS` (16) — and qwen4exp is 24 q-heads / 2 kv-heads = **gqa 12**, so a 16-warp
+  block mixed heads 0..11 (kv 0) with 12..15 (kv 1) into the same smem rows (each staging thread adds
+  its own head's K/V offset before the cooperative gather).  16 of 24 heads attended over the wrong V
+  rows.  Now `min(QSA_MAX_HEADS, gqa_ratio)` heads per block (a no-op at gqa >= 16; for qwen4exp two
+  blocks of 12).  Quality, measured as perplexity over 8 x 4096 tokens, 3-GPU `-sm layer`:
+  **7.3269 +/- 0.151 -> 6.5267 +/- 0.132**, versus the dense masked oracle **6.5306 +/- 0.132** (the
+  dense path computes the same top-k attention through the well-tested FA kernels).  The same table
+  validates the new types (`q4_1` 6.5787 vs 6.5805 dense, `q5_0` 6.5444 vs 6.5375).
+
+**It also fixed a hole in the test suite.**  `test-backend-ops` had **no** `FLASH_ATTN_QSA` coverage, and
+the CPU reference (`ggml_compute_forward_flash_attn_qsa`) knew only f16/bf16/q8_0 — so the kernel that
+serves qwen4exp's default attention path had *no oracle anywhere*.  This entry adds the four types to
+the CPU reference and 18 `test_flash_attn_qsa` cases (all seven KV types; gqa 1 and 8; the three head
+sizes; `n_tps` 1 and 4; sliced+combined top-k walks).  **0/18 -> 18/18**: the old kernel scores NMSE
+~1.0 (i.e. it computes something else entirely), the fixed one < 5e-4.
+
+**Why every earlier gate missed it** (`GREEDY-PURITY.md` §21): the corruption is *width-uniform*, so the
+`W=1..8` purity matrix — the instrument behind every previous QSA finding — is structurally blind to
+it; the probe never even executed the op (the QSA op only exists above the indexer selection width
+`indexer_top_k + r - 1` = 2051, and the probe's `n_ctx` is 2048, so its max `P` = 2040 — forcing the
+selection path with `LLAMA_QSA_DENSE_SHORTCUT=0 LLAMA_QSA_DENSE_DECODE_UNTIL=0` is now part of the QSA
+gate); and MTP acceptance pointed the *wrong way* (draft and main run the same wrong attention, so the
+corrupted pair is self-consistent and accepts **more**: 0.65 vs 0.49).  The instruments that catch it
+are the CPU oracle and the dense path as a reference — both now permanent.
+
+**Validation** (all 3x R9700 gfx1201, canonical `a0cd6ce02`): `FLASH_ATTN_QSA` 18/18, `FLASH_ATTN_EXT`
+5599/5599, `GATED_DELTA_NET` 4/4; probe purity with the QSA op forced at every width, all seven types,
+both splits (f16 tensor `f400a002bd0af7df` is **identical** for the pre-fix and fixed builds — the fix
+is provably a no-op in the tensor split, where the kernel sees one K/V head per device: `Q.ne2=12,
+K.ne2=1`; layer f16 `18bc218586c80f91` -> `9aef99f6a614de4c`; the four new types
+layer `83b460071c92c4be`/`9e6035525c2e3f07`/`c5e332fed9aa1c18`/`a0bad36e46adaf57`, tensor
+`85cd44e288fe6124`/`595721104be83ac1`/`524d2df8d1be0987`/`3b4a5b989b988134`, all `W=1..8` pure);
+text purity (`/tmp/prompt3k.txt` = 2122 tokens, just over the selection width, so the sparse arm really
+runs) tensor f16 `804de0576868` (**unchanged** = the recorded reference), layer f16 `95817e5d366a`,
+tensor `q4_1` `886292b17a93`, layer `q4_1` `b15e1c98dbf8`, tensor `q4_0` `26065aab382c`, each
+`plain == n_max 3 == n_max 7`; MTP `n_max 3` pos-1 acceptance 0.651 (layer `q4_1`, aggregate 0.402) /
+0.771 (tensor `q4_1`) / 0.49 (layer f16) / 0.47009 (tensor f16, unchanged); prefill `-sm tensor`
+p8192/16384/32768 f16 2376.5/2435.1/2380.9, `q4_1` 2404.1/2452.5/2384.2, dense 2493.0/2411.8/2079.9;
+decode `-sm tensor` d0/8192/32768 tg128 f16 51.4/51.8/49.9 (dense-decode default) vs 51.1/47.6/44.7
+(forced sparse) — **the arch decode policy was re-measured on the fixed kernel and stands** (dense wins
+at every depth); non-QSA regression: 4B/27B probe hashes reproduce exactly and every non-QSA file is
+untouched.
+
+**Landing**: block 14 amended in place (`git commit --amend`, the delta byte-identical to the validated
+working diff — it is the tip, so no rebase), `scripts/make-patches.sh` default tip -> `a0cd6ce02`,
+`rdna-boosts-all.patch` refreshed by hand, clean-apply sim re-verified, block 15 re-cut a seventh time
+(one real conflict in `src/models/qwen4exp.cpp`: block 15's refactored `qwen4exp_qsa_sparse()` needs the
+extended type conjunct; `fattn-qsa.cu`/`ops.cpp`/`test-backend-ops.cpp` auto-merged), beta patch
+re-exported (3 774 lines, subject `[PATCH 15/15]`, round-trip verified).
+
+**Next session's task (F3 step 2, `iq4_nl`) has its brief**:
+`wip/kv-quant-purity-followups/HANDOVER-2026-09-11-f3-step2-iq4_nl.md` — the same two-block shape
+(block 08 for the dense FA enablement, block 14 for QSA + the CPU oracle + the test), with the measured
+pre-state (`-ctk iq4_nl` on the 4B is 2269.8 pp512 / 48.5 tg32 today because FA is disabled for the
+whole context) and the prize (`iq4_nl` is the smallest KV cache of the set: 288 MiB vs f16's 1024 at
+c=32768 on the 4B).
+
+**Also recorded**: `AGENTS.md` gained the "RDNA first, other backends uninjured" scope policy (the F1
+VEC arms stay as they are — AMD can't reach them, NVIDIA has its own maintainers) and the QSA-oracle
+critical fact; `patches/README.md` gained the fourth-amendment section; `GREEDY-PURITY.md` §21 records
+the shared-staging-tile rule and the instrument analysis; `TODO.md` marks the task done and lists
+`iq4_nl` (F3 step 2), the tensor-tuned prefill crossover knob and the QSA fused-op probe as follow-ups.
+
+## 2026-09-11 (8) — F3 step 1: `q4_1`/`q5_0`/`q5_1` become first-class KV cache types
+
+**Canonical tip `6f07fe67a`** (block 08 `1a488fcf0`, block 14 `6f07fe67a`), net tree
+`0c9dece6b0798e41360b8a8366187f38f37e1566`, 15 blocks, clean-apply strict 15/15 with 0 whitespace
+warnings and the applied tree equal to the canonical one.  Two blocks amended: 08 (the FlashAttention
+KV-type enablement) and 14 (the QSA-vs-KV-type arm + the tensor-split gate).
+
+**Step 0 of the job was an instrument, not code.**  `--cache-type-k/v q4_1|q5_0|q5_1` were width-pure
+and cheap (27B, ctx 204800: 1375/1512/1650 MiB vs 2337 `q8_0` / 4400 f16) but 3.4x slower prefill and
+1.7x decode.  The `[FATPATH]`/`[FATTRACE]` trace settled the mechanism: f16/`q4_0`/`q8_0` take
+`BEST_FATTN_KERNEL_TILE` at every width **with `need_f16_K/V = 1`** — i.e. the launcher stages f16
+copies and the tile/mma families consume every type `ggml_get_to_fp16_cuda` covers — while `q4_1`
+produced **no FA call at all**, because `ggml_cuda_fattn_kv_type_supported()` returned false and
+`llama_context::resolve_fused_ops()`' FlashAttention probe then disabled FA for the whole context (the
+non-FA attention path).  So the fix is not a new kernel: it is to let the FA path accept the types and
+keep the vec family's instance list consistent.
+
+**Block 08 (second 2026-09-11 amendment): the three types are enabled.**  `Q4_1`/`Q5_0`/`Q5_1` lose
+their `#ifndef GGML_CUDA_FA_ALL_QUANTS` guard, the default vec dispatch gains the three diagonal cases,
+and `ggml-{cuda,hip,musa}/CMakeLists.txt` gain the three diagonal instances (3 TUs).  `FA_ALL_QUANTS`
+stays the knob for the 42 *mixed* `K != V` pairs; with it off the chooser still enforces `K == V`, so
+the reachable pair set is exactly the diagonals and the predicate cannot disagree with the instances.
+Measured (4B, 1 GPU, pp512/tg32): `q4_1` **2119.6/55.94 -> 7366.3/94.16** (+248 %/+68 %), on par with
+`q4_0` (7376.0/93.9) and `q8_0` (7337.7/93.8); qwen4exp 3-GPU `-sm tensor` `q4_1` within 1 % of f16 at
+every width (pp512 476.1, tg pl=1 40.60 / pl=4 126.44 / pl=8 176.16).
+
+**Block 14 (third 2026-09-11 amendment): qwen4exp's QSA arm respects the KV type, and the tensor-split
+gate is narrowed.**  Narrowing the gate alone was not enough — qwen4exp + a *quantized* KV cache +
+`-sm tensor` **aborted** (`ggml-backend-meta.cpp:538`, `ret.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN`)
+— and it aborted for **`q4_0` too**, which the delivery's own gate allowed: this is a pre-existing bug,
+not a consequence of the enablement.  Instrumented, the op with the unknown split state is
+`MUL name=attn_gated-<il>`, whose sources are the (mirrored) attention output and the hidden-split
+attention gate.  The graph built `GGML_OP_FLASH_ATTN_QSA` for a cache type the fused QSA kernel cannot
+read (`ggml_cuda_flash_attn_qsa_supported()`: f16/bf16/q8_0 only), so the op was never split and the
+split states stopped agreeing.  `LLAMA_QSA_OFF=1` and `LLAMA_QSA_SPARSE_FA=0` both made it work; the fix
+takes the dense masked path whenever the cache type is not QSA-native (`qsa_sparse` now also requires
+f16/bf16/q8_0).  The tensor-split gate is narrowed to the types that really have a native FA read path
+(`llama_kv_type_has_native_fa`, mirroring the backend predicate), which turns the pre-existing `q4_0`
+abort into the clean error; the message lists the allowed set.  On dense models the newly enabled types
+split fine (`27B` + `q4_1`/`q5_0`/`q5_1` + 3-GPU `-sm tensor` validated), and on qwen4exp only the
+*fused sparse* prefill arm is given up for quantized caches — the decode band was already dense there
+by arch policy, so its logits are unchanged (the `q4_1` probe hash is identical with and without
+`LLAMA_QSA_SPARSE_FA=0`).
+
+**Validation (gfx1201, per type).**  Width purity (probe, P=256, `W=1..8`, `CB=0`, `RS=0` and
+`RS=from_w`) on 4B/1-GPU, 27B/`-sm layer`, 27B/`-sm tensor`, MoE-35B-A3B/1-GPU, gemma-4-E4B (SWA)/1-GPU
+and qwen4exp/`-sm tensor`: **one hash per (model, split, RS)** for f16/`q4_0`/`q4_1`/`q5_0`/`q5_1`/`q8_0`,
+with every pre-existing value reproducing its recorded reference (`671d6096987470cb` 4B f16,
+`31a0c1bace68e211` 4B q8_0, `619c151e48c76613` 4B q4_0, `4089b4d40b91090c` 27B layer f16,
+`91434ea90f2cbfa0` 27B tensor f16, `d4156dbeb2252022` 27B tensor q8_0, `ac8825358d9adfda` MoE f16,
+`dcf1ae667f730879` qwen4exp tensor f16).  Greedy purity: 27B and qwen4exp, `plain` ==
+`--spec-draft-n-max 3` == `7` byte-identical for `q4_1`/`q5_0`/`q5_1` (qwen4exp `q4_1`
+`42dfe66f25ed`, qwen4exp `q8_0` control `75d8530c5bb1` = the recorded item-1 value, 27B `q5_0`
+`baca8ae6b30e`, 27B `q5_1` `675a1aa57b90`).  MTP gate: qwen4exp `q4_1` pos-1 acceptance **0.628**
+(`q8_0` 0.700) with 61.2 t/s vs plain 45.9; 27B `q4_1` **0.893** (`q8_0` 0.962) with 85.7 vs 36.9 t/s.
+`test-backend-ops -o FLASH_ATTN_EXT` **5599/5599** (up from 4591/4591 — the new pairs are now covered)
+and `-o GATED_DELTA_NET` 4/4.  Coherence: 4B 3-GPU `-sm tensor` same-seed `1c5d32ac537d` on both the
+canonical and the clean-apply sim build.  The block-15 beta patch was re-cut a sixth time on the new
+tip (**base `6f07fe67a` -> beta commit `8c377b958`**, tree `34527a292`) — this re-cut is *not*
+metadata-only: the merge threads the KV type into block 15's refactored `qwen4exp_qsa_sparse()` via new
+`llama_cparams::type_k/type_v` fields, and it is a no-op for every validated beta config (f16/bf16/q8_0).
+
+**Next (F3 step 2):** `iq4_nl` (same memory class as `q4_0`, but no V-side dequant at all in the FA
+kernels — needs `dequantize_V_iq4_nl` + an instance + the vec/cross-product instance decision + the
+same sweeps); see `wip/kv-quant-purity-followups/HANDOVER-2026-09-11-f3-kv-diagonals.md`.
+
+## 2026-09-11 (7) — the QSA decode arm and the MoE shared-expert epilogue are band-uniform
+
+**Canonical tip `5ad11fd35`** (block 13 `ee6b7d53d`, block 14 `5ad11fd35`), net tree
+`3e7accbd7f46c3d196e168a4d29a0350f813f5ff`, 15 blocks, clean-apply strict 15/15 with 0 whitespace
+warnings.  Two width-dependences of the same shape as the F1/F2/HC fixes — a band gate written as
+`n_tokens == 1` — closed in one session, each in its owning block.
+
+**Block 13 (fourth amendment) — the MoE shared-expert epilogue serves the band.**
+`ggml_cuda_op_shexp_down_gate` (the fused `down(swiglu) * sigmoid(gate(x)) + moe_out + ffn_residual`)
+was gated `down_mm->src[1]->ne[1] == 1 && gate_mm->src[1]->ne[1] == 1` *because* its fused gate
+reduction does not reproduce the standalone mmvq order — so `W=1` ran the fused epilogue and `W>=2`
+the unfused chain: the last width-impurity in the MoE class (`W=1 ac8825358d9adfda` vs
+`W>=2 bd138ad2326fbbf2`, 35B-A3B Q4_K_M).  The kernels are now token-generic (`shexp_gate_sigmoid`:
+one warp per token; `shexp_down_gated_q8_0`: one block per `(row, token)`) with **`nwarps` pinned to
+the single-token value** (`calc_nwarps` returns 4 for `ncols_dst 1..4` but 2 for `5..8`, and `nwarps`
+sets `blocks_per_iter` = the reduction order), and the fusion arm accepts
+`1 <= ne[1] <= MMVQ_MAX_BATCH_SIZE` (same width on both matmuls, contiguous epilogue operands).
+Probe: `W = 1,2,3,4,8` all `ac8825358d9adfda`; kill-switch (`GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1`)
+all `bd138ad2326fbbf2` (uniform unfused reference).  **MoE MTP improved**: 35B-A3B, 1 GPU, f16,
+`n_max 3`, `n=96`: acceptance **0.81707** (was 0.51) with 167.3 t/s vs plain 96.9 (**+73 %**) — the
+verify now uses the same epilogue arithmetic as the draft's single-token decode steps.  Cost: the
+fused kernel re-reads the down weight row per token, so at the widest verify batches it loses a
+little to the unfused chain (pl=8 332.1 vs 341.5, pl=4 252.0 vs 254.2); the decode win is kept
+(pl=1 97.9 vs 98.3) and the fix (a column-blocked fused kernel that reads the weight row once per
+`(row)` block) is a follow-up in `TODO.md`.  `patches/README.md` block-13 notes; `GREEDY-PURITY.md`
+§17.
+
+**Block 14 (second 2026-09-11 amendment) — the QSA decode arm serves the band.**  qwen4exp was still
+not `plain == draft-mtp` in *text* (only ~100 of ~700 characters in common) even after the
+hyper-connection band fix.  Localised to the QSA **indexer** arm choice: `LLAMA_QSA_OFF=1` is
+byte-identical (`d4499ac8db72`) while `LLAMA_QSA_SPARSE_FA=0` is not, so the sparse-FA kernel is
+exonerated; the single-step width probe is pure (it cannot reach the bug: `P <= 2048` keeps `n_kv`
+below the selection width).  An arm trace (`build_layer_attn`): the middle arm — the arch policy's
+dense decode arm — was gated `n_tokens == 1`, and with `width = indexer_top_k + r - 1 = 2051`
+(`n_kv = 2304` at the first decode graph) `--spec-type none` took **arm 2 (dense)** while
+`draft-mtp` (`n_tokens=4`) fell through to **arm 3 (sparse top-k selection)**; identical for the first
+11 graph builds, split at the first decode graph.  Fix: `QSA_DECODE_BAND = 8` (the `n_max <= 7` purity
+band), arm 2 takes `n_tokens <= QSA_DECODE_BAND`; prefill keeps the sparse selection (the policy
+"prefill is untouched: QSA always").  Measured: `plain == n_max 3 == n_max 7` = `804de0576868`
+(f16 KV, 704 chars) and `plain == n_max 3` = `75d8530c5bb1` (q8_0 KV, 660 chars); MTP `n_max 3` pos-1
+acceptance 0.615 with 63.9 t/s vs plain 50.1 (**+28 %**), `n_max 7` pos-1 0.618.  The plain stream
+moves with the fix (658 -> 704 chars) — the shared 4-token non-decode shape at `n_kv = 2304` also
+moves to the dense arm.  Cost: the verify is now dense, slightly more attention work than the top-k
+selection when the cache has just crossed the budget (pl=5 146.7 vs 149.5, pl=6 160.1 vs 162.5,
+pl=1/2/4/7/8 flat or better).  Two width-dependences remain in the **sparse** regime and are recorded
+in `GREEDY-PURITY.md` §18 + `TODO.md`: the fused indexer score's "byte-identical" claim is measurably
+false and is itself `n_tokens == 1`-gated (unreachable on gfx1201 by default, but the default path on
+gfx1151 above its 64K crossover), and a residual split survives even with one arm (706-character
+common prefix instead of 100, then divergence).
+
+Full gate set: probes on both platforms, `plain`/`n_max 3`/`n_max 7` text purity on f16 + q8_0 KV,
+MTP acceptance/throughput gates (MoE + qwen4exp), `llama-batched-bench` pl=1..8 on both models,
+`test-backend-ops -o GATED_DELTA_NET` and `-o FLASH_ATTN_EXT` (4/4 backends), 4B coherence smoke.
+The block-15 beta patch was re-cut on the new tip on the new tip: base `5ad11fd35` -> beta commit `f3ece1e123905a98059025a7e7a3c7e8e28f54dc`, tree `5316920f130e585e23b9a38eef6e2c3c5940259e` (the `qwen4exp.cpp` hunk headers shift by +9 lines; `git am -3`/`git apply -3` resolves it cleanly, a plain `git am` does not).
+
 Reverse-chronological log of every delivery-affecting change to the
-**rdna-boosts 14-patch set** (block amendments, community-fix
+**rdna-boosts 15-patch set** (block amendments, community-fix
 integrations, re-baselines, regeneration + clean-apply re-verifications).
 Newest entry first.  The README's
 [Current state](README.md) section is a lean summary and points here
@@ -10,23 +1034,616 @@ for the full record; per-block technical notes live in
 
 ---
 
-- **Container CI: the 15-patch set packaged as ROCm containers (2026-09-10).**
-  Added `.github/workflows/docker-ghcr.yml` + `.devops/rdna-rocm.Dockerfile`
-  (adapted from upstream's `.devops/rocm.Dockerfile`) to build and publish
-  `full`/`light`/`server` images to GHCR for ROCm 7.2 (`7.2.4-complete`),
-  7.14 (`7.14.1-full`) and 10.0 (`10.0.0-full`).  The workflow downloads
-  upstream at the fork point `9113cc188` as a tarball, `git init`s the tree,
-  applies `patches/0001..0015` with strict `git am` (base + 15 commits), then
-  builds for `gfx1100;gfx1151;gfx1200;gfx1201` with `-DGGML_HIP_RCCL=ON`.
-  Distribution infra only -- **no patch/block content changed.**  Verified
-  2026-09-10: two full runs green (all three jobs, ~80-92 min each); tags
-  `rocm-{7.2,7.14,10.0}` (= `server-*`), `light-*`, `full-*` (+ immutable
-  `-9113cc188` variants; `latest` = ROCm 10.0 server) published public at
-  `ghcr.io/mrdrmccoy/llama-cpp-rdna-boosts`; a local podman build of the same
-  Dockerfile produced working `light`/`server` containers (the binaries report
-  build 16 / commit `ee93ba5`) with `librccl.so.1` linked.  Registry
-  `buildcache-*` tags (mode=max) carry the layer cache; `provenance: false`
-  keeps each single-arch tag a plain image manifest.  See `CONTAINERS.md`.
+## 2026-09-11 (6) — cause 3 localised: qwen4exp's plain-vs-spec gap is the QSA indexer path (not the FA kernel)
+
+Follow-up measurement on the cause-3 item of entry (5).  All three runs are qwen4exp, 3-GPU
+`-sm tensor`, f16 KV, `/tmp/prompt3k.txt` (~3.3k prompt), 128 greedy tokens, `--temp 0 --seed 42`,
+`n_max 3` where applicable; the emitted text is extracted by backspace-stripping and hashing the
+generation between the `> ` prompt echo and the `[ Prompt: ... ]` footer.
+
+| run | plain (`--spec-type none`) | `draft-mtp --spec-draft-n-max 3` |
+|---|---|---|
+| default | `3ee9daee5c07` (658 chars) | `8a50ea24e8d5` (729) |
+| `GGML_CUDA_GDN_CHUNKED=0` | `dad4f4442580` (721) | `9d29b773906f` (665) |
+| **`LLAMA_QSA_OFF=1`** | **`d4499ac8db72` (711)** | **`d4499ac8db72` (711)** — identical |
+| `LLAMA_QSA_SPARSE_FA=0` | `25f300a81b9e` (723) | `0d466b2dcf09` (721) |
+
+* **The kill-switch that works is `LLAMA_QSA_OFF=1`**: plain == `draft-mtp` byte-identical, and the
+  knob provably fires (the plain text moves `3ee9daee5c07` -> `d4499ac8db72`).
+* **`LLAMA_QSA_SPARSE_FA=0` does *not* fix it** (two different texts, both moved — so the knob fired):
+  the sparse-FA kernel (`fattn-qsa.cu`) is therefore **exonerated**, and the defect is in the rest of
+  the QSA machinery — the **indexer/score** path (`indexer-topk.cu` plus the `qwen4exp.cpp` gates).
+  `LLAMA_QSA_OFF=1`'s own comment says it "forces the dense no-indexer regime everywhere", which is
+  exactly the part `LLAMA_QSA_SPARSE_FA=0` keeps.
+* **The site class is cause 1's**: `src/models/qwen4exp.cpp:1094` gates the fused indexer score on
+  `idx_score_fused && idx_key_float && n_tokens == 1 && ...` and `:1419` gates the early-decode dense
+  shortcut on `qsa_dense_decode_until > 0 && n_tokens == 1 && n_kv < qsa_dense_decode_until` — so a
+  1-token decode and an n-token verify batch take different QSA paths.  The single-step width probe is
+  pure because it never reaches the sparse/indexer decode regime (its one decode step sits in the
+  dense window).
+* **It is not a prefill-state difference**: the divergence appears only after ~100 chars (~20 generated
+  tokens) of the 3.3k-prompt run, i.e. the first steps agree (and `n_max 3` == `n_max 7` text is
+  **identical** — `8a50ea24e8d5` — which is the cause-2 fix's win, since pre-fix they disagreed:
+  `8a50ea24e8d5` vs `e6918a7af1f9`).
+* The known **Issue #25 GDN chunked-prefill** item is a *separate* contributor, not this one: its
+  kill-switch moves both texts (`3ee9daee5c07` -> `dad4f4442580`, `8a50ea24e8d5` -> `9d29b773906f`)
+  without making them agree.  So cause 3 is **not** the GDN item and closing the GDN item will not
+  close qwen4exp's plain-vs-spec gap.
+
+**Consequence for the backlog:** cause 3 is a *small, well-scoped* fix in the established F2-cause-1
+pattern (make the QSA decode band take one path for `n_tokens = 1..8`), with two identified sites and a
+proven kill-switch — **not** a deep kernel issue.  Until it lands, `LLAMA_QSA_OFF=1` restores
+`plain == draft-mtp` for qwen4exp byte-identically.
+
+## 2026-09-11 (5) — F2 cause 2 FIXED: the MoE decode/verify band is band-uniform (block-13 amendment)
+
+**qwen4exp is now width-pure `W = 1..8`**, so the designed `--spec-draft-n-max <= 7` verify batch is
+bit-identical to the 1-token decode — the remaining *logit-level* condition for `plain == draft-mtp`.
+Canonical tip **`bfaa83d8a`**, net tree **`4e5f2952f016f1ac160c53261f7b01d346322534`**; only
+`ggml/src/ggml-cuda/mmvq.cu` changed (26 insertions / 11 deletions).
+
+**Task 1 answered by measurement, and it moved the diagnosis.**  `[GD]` full-graph dumps show the graphs
+are **identical** at every stage (2647/2404/2271/1863/1668/1565 nodes at both `W=4` and `W=5`), so the
+previous entry's question ("fusion-applied vs graph-built-with-fewer-ops") is settled: the graph always
+contains `MUL_MAT_ID(ffn_moe_gate)`, `MUL_MAT_ID(ffn_moe_up)`, `GLU(ffn_moe_swiglu)` at the same node
+indices (`k=76/77/78`), and only the *fusion coverage* differs.  But the cause was **not** the
+`mul_mat_id_glu_ops` fusion the previous entry blamed:
+
+* `mul_mat_vec_q_moe`'s `__launch_bounds__` was `get_mmvq_mmid_max_batch_for_device<type>()*warp_size`
+  — the upstream **per-type mmvq cap compiled into the kernel**, while the block is
+  `(warp_size, ncols_dst)`.  Launching `IQ3_S` (cap 4) with `ncols_dst = 5` is 160 threads > the bound
+  and dies with `ROCm error: unspecified launch failure`, so the cap is a *capability* limit, not just
+  a heuristic.
+* the same cap routes the upper band to MMQ: `ggml_cuda_mul_mat_id` takes `ne2 <= cap → mmvq` else
+  `should_use_mmq → MMQ`, and `use_mmvq` (`ggml-cuda.cu:3730`) gates the `mul_mat_q_pair` fusion
+  (which is what actually fired at `W = 5..7`).  mmvq (one warp per token, `mul_mat_vec_q_moe`) and
+  MMQ reduce in different orders, so the band splits.
+* the **UD-IQ4_XS quant mixes expert types per layer** — 47 layers `IQ3_S` gate/up (cap 4), layer 2
+  `IQ4_XS` (cap 5), down `IQ4_NL`/`Q8_0` (cap 7) — which *predicts the census exactly*: fused layers
+  48/48/48/48/1/0/0/0 for `W = 1..8` (measured `ffn_moe_up` MUL_MAT_ID counts 0/0/0/0/47/48/48).  That
+  is the 4→5 and 5→6 boundary; the down's cap 7 is the 7→8 boundary.
+
+**Fix.**  Block 13 already carries the invariant — `mul_mat_vec_q_switch_ncols_dst`'s `has_ids` branch
+("this must cover `ncols_dst == 1` as well … the decode == verify invariant", added by block 13
+2026-09-01) routes every `MUL_MAT_ID` to the column-generic MoE kernel.  The fix completes it for the
+whole band:
+
+1. `mmvq_mmid_max_batch_band(cap)` floors the per-type cap at `MMVQ_MAX_BATCH_SIZE` (the decode/verify
+   band), applied to every AMD arch lookup, host *and* device;
+2. `mul_mat_vec_q_moe`'s launch bound becomes `MMVQ_MAX_BATCH_SIZE*warp_size`, so the kernel can
+   actually be launched across the band.
+
+No other path changes: the caps' call sites are all `MUL_MAT_ID`-only, so dense models are untouched.
+
+**Validation.**  `W = 1..8` all `3adeb313042a871b` (`-sm layer`) and `dcf1ae667f730879`
+(`-sm tensor`) — i.e. every width equals that split's **pre-fix `W = 1` value**, so plain decode is
+bit-unchanged and only `W = 5..8` moved onto it (the F1 "move the cheap side" pattern).  Also pure with
+the state-sequence dimension exercised (`RS=0` and `RS=from_w`).  Controls: the **pre-fix vs post-fix
+`plain` text is byte-identical** (`3ee9daee5c07`), and at the MTP gate config (`n_max 3` = `W=4`, a
+no-op width) the runs are byte-identical: acceptance `0.76744` (66/86), generation 80.1 vs 80.0 t/s.
+Text level: pre-fix `n_max 3` ≠ `n_max 7`; **with the fix they agree** (`8a50ea24e8d5`).
+
+**Perf — the fix is a large win at the verify widths** (`llama-batched-bench`, fixed vs baseline
+interleaved, swappable `libggml-hip.so`):
+
+| model | batch 1 | 2 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|
+| qwen4exp 3-GPU `-sm tensor` tg128 | 50.5 / 50.4 | 85.4 / 85.6 | 134.1 / 132.9 | **149.5 / 118.4 (+26 %)** | **162.5 / 130.6 (+24 %)** | **171.4 / 147.0 (+17 %)** | **178.0 / 155.4 (+14.5 %)** |
+| 35B-A3B MoE 1 GPU tg128 | 98.3 / 98.1 | 156.4 / 156.2 | 254.2 / 254.1 | – | – | – | **341.3 / 289.9 (+17.8 %)** |
+| 4B dense 1 GPU tg128 | 100.6 / 100.5 | 167.2 / 167.3 | 294.0 / 294.9 | – | – | – | 414.5 / 413.3 |
+
+Widths inside the caps are unchanged (and bit-identical), dense is untouched, and MTP `n_max 7` goes
+**41.8–42.5 vs 36.1 t/s (+16–18 %)** with acceptance `0.59375` vs `0.55556`.  The upstream per-type
+mmvq caps were actively *costing* throughput on RDNA4 with the fork's mmvq + fused-GLU kernels.
+
+**Cross-checks.**  `GATED_DELTA_NET` 4/4 backends OK; `FLASH_ATTN_EXT` 4/4 OK; MoE asterisk intact
+(`ac8825358d9adfda` / `bd138ad2326fbbf2`); reserves unchanged (no allocation changes); clean-apply
+simulation strict 15/15 with **0 whitespace warnings** and tree == canonical.
+
+**Open — cause 3 (new, pre-existing, independent of cause 2).**  `plain` still differs from
+`draft-mtp` text for qwen4exp even after the fix (`plain` `3ee9daee5c07` vs `n_max 3 == n_max 7`
+`8a50ea24e8d5`), and the fix **cannot** be responsible: `n_max 3` uses `W = 4`, where the fix is a
+verified no-op (bit-identical logits, byte-identical text, byte-identical acceptance).  Since the
+single-step probe shows bit-identical logits for `W = 1..8` across both splits and the state-sequence
+dimension, the divergence must be a **multi-step** effect — i.e. the speculative roll-back itself.
+Prime suspect: the **masked (freed/stale) KV cells** written by rejected drafts, which block 14 keeps
+at exactly `+0.0` in the HIP `fattn-tile`/`fattn-mma-f16` and Vulkan paths but **not** in qwen4exp's
+**QSA sparse-attention path** (`fattn-qsa.cu`).  Next instrument: a multi-step probe (prefill P, then
+feed a *fixed* token sequence, comparing the logits at each position between `W = 1` steps and `W = k`
+chunks) — the single-step probe and `RS` dimension cannot see a cell that is only stale after a
+roll-back.  **Corrected in the 2026-09-11 (6) entry: the cause-3 site is the QSA *indexer* machinery,
+not the sparse-FA kernel, and the proven kill-switch is `LLAMA_QSA_OFF=1`.**
+
+## 2026-09-11 (4) — F2 cause 2 localised: it is the MoE gate+up+GLU fusion flipping at `n_q = 5`, not a kernel-dispatch band
+
+**Instrument.**  The per-node `[ND]` dump (`GGML_CUDA_NODE_DUMP=1`, re-appliable from
+`wip/kv-quant-purity-followups/tools/node-dump-instrumentation.patch`) on qwen4exp, `-sm layer`,
+P=256, RS=0, at W=4/5/6/7.
+
+**Result — the executed-op census is the signature, and it is unambiguous:** only one op's count changes
+across the whole band, and it changes at exactly the boundary:
+
+| width | `ffn_moe_down` | `ffn_moe_up` | total nodes |
+|---|---|---|---|
+| `W=1..4` | 48 | **0** | 1920 |
+| `W=5`   | 48 | **47** | 1967 |
+| `W=6,7` | 48 | **48** | 1968 |
+
+So the MoE **gate+up+GLU fusion** (`mul_mat_id_glu_ops = {MUL_MAT_ID, MUL_MAT_ID, GLU}`,
+`ggml-cuda.cu:3324`, admitted via `ggml_cuda_should_fuse_mul_mat`) is applied for `n_q <= 4` and
+abandoned from `n_q = 5`, and the fused GLU epilogue and the separate `MUL_MAT_ID` + `GLU` chain do not
+sum identically — which is the impurity.  The `W=6`/`W=7` pair is a **perfect calibration** (`+0` nodes,
+`0` differing ops) — that is *why* they hash identically, and it validates the census (the previous
+session's node-dump diff was unusable because it had no such calibration, and because shape equality is
+not sufficient: cache/state tensors legitimately differ with W).
+
+**Refuted by measurement (the pre-HC-fix exclusion list was unreliable — the `W=1` vs `W>=2` break
+dominated those hashes):** the block-13 `get_mmvq_mmid_max_batch` cap and its MMQ pair arm (forcing MMVQ
+across the band via a temporary `GGML_CUDA_MOE_MMVQ_BAND=1` is **byte-identical**, and `should_use_mmq`
+is false for `n_q <= 8`, so that arm never fires in the band); the MoE expert kernel (`mul_mat_vec_q_moe`
+is **provably width-invariant** — `rpb` derives from `blocks_per_row_x`, a K property, and
+`block_dims = (warp_size, ncols_dst)` is one warp per token); `LLAMA_QSA_OFF`,
+`GGML_CUDA_DISABLE_GRAPHS`, `GGML_CUDA_DISABLE_MOE_MMQ_FUSION`, `GGML_CUDA_DISABLE_WEIGHTED_DOWN`,
+`GGML_CUDA_DISABLE_SHEXP_DOWN_GATE` (all leave `W=5` = `c999233926f0`; positive control
+`LLAMA_FUSED_HC_MIX=0 LLAMA_FUSED_HC_COMBINE=0` -> `bdaa8fc57381`, the recorded HC-off value, proving the
+env plumbing); `ggml_cuda_should_use_mmvf(F32)` on gfx1201 = `ne11 <= 3` (a 3/4 boundary that does not
+appear).
+
+**Consequence for the brief:** cause 2 is a **fusion-coverage** band, not an `ncols_dst`/`ne11`
+kernel-dispatch band — so it is *not* the same workstream as F3, and the fix is the F1/HC shape: keep the
+gate+up+GLU fusion for the whole decode/verify band (`n_q <= 8`) rather than only `n_q <= 4`, measuring
+the verify-throughput cost the way F1's was.  Next step: re-run the `GGML_CUDA_DISABLE_FUSION=1` width
+matrix **post-HC-fix** (the earlier "survives all fusions disabled" observation predates it) to confirm
+the unfused path is itself width-invariant.  Debug tooling to reuse: the node census above (nothing is
+committed as code — it is the existing `[ND]` dump plus 30 lines of parsing), and the
+`W=6` vs `W=7` calibration trick.
+
+## 2026-09-11 (3) — Block 08 amended: the decode/verify band no longer spans two FlashAttention kernel families (F1 fixed)
+
+**What changed.**  `ggml_cuda_get_best_fattn_kernel()` (`ggml/src/ggml-cuda/fattn.cu`) no longer returns
+`BEST_FATTN_KERNEL_VEC` for small batches.  The fallback was upstream code (`11f0af550`, "for small
+batch sizes the vector kernel may be preferable"): VEC for `n_q == 1` when `!gqa_opt_applies`, and for
+`n_q <= 2` whenever K or V is quantized.  Both conditions are *always* inside the `n_q <= 8`
+decode/verify band (prefill fell through to TILE anyway), so the branch only ever split the band; it is
+deleted and the whole band uses TILE — the same shape of fix as the block-08 WMMA guard added
+2026-08-29 (`Q->ne[1] > 8`) and block 00's `ntiles_dst_eff` in `launch_fattn`.
+
+**Why.**  Measured with a new `GGML_CUDA_FA_TRACE` instrumentation (committed for reuse as
+`wip/kv-quant-purity-followups/tools/fa-kernel-chooser-trace.patch`): with `q8_0` or `q4_0` K/V the
+chooser returned **VEC (100) at `n_q = 1,2` and TILE (200) at `n_q >= 3`**; the two families order the
+online-softmax/PV reduction differently, so token-0 logits at `W = 1,2` disagreed with every verify
+width.  The launcher's own plan was *already* width-independent (`ntiles_dst_eff`, `parallel_blocks`
+== `ntiles_KV` at every width), which is why the earlier F1 suspects (KV-type staging, the KV-cache
+write path, `stream_k` rounding) all measured clean.
+
+**Measured (3x gfx1201, ROCm 7.14, unpinned).**
+- 4B Q8_0 `q8_0/q8_0` **1 GPU `W=1..8` all `31a0c1bace68`**, 2-GPU `-sm tensor` `abebfb93`, 3-GPU
+  `-sm tensor` `7fe106f5`; `q4_0/q4_0` `619c151e48c7` / `240bc37d` / `483a850e` — all four split
+  configs pure, and every value is that config's *previous verify* value (only `W=1,2` moved).
+- 27B Q8_0 `q8_0/q8_0` 3-GPU tensor `W = 1,2,3,4,5,8` all `d4156dbeb225`.
+- f16/bf16 configs byte-identical (they never took VEC): 4B f16 `671d60969874`, bf16 `b5d7e7b4`.
+- text level, 27B 3-GPU tensor, ctx 8192, 300 greedy tokens, `q8_0` KV: plain == `n_max 3` ==
+  `n_max 7` = `3537bc2b36be` (before: plain `73b2565bce47`/2810 chars vs verify `3537bc2b36be`/2801);
+  f16 control `f32aac948600` for both.  **Harness note:** `llama-cli`'s `/\|` spinner is ``-based and
+  timing-dependent and the banner embeds the build SHA — apply backspaces and strip both before
+  hashing; three "divergences" this session were spinner noise.
+- MTP: 27B `n=96` q8_0 KV acceptance **0.90789 (69/76), identical** to the pre-fix build.  MoE
+  asterisk unchanged (`ac8825358d9adfda` / `bd138ad2326fbbf2`, and both `bd138ad2326fbbf2` with
+  `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1`).
+- perf (llama-bench, q8_0 KV, interleaved, same binary): 4B pp512 7609.8 -> 7597.9 (-0.15% = noise),
+  tg128 98.03 -> 97.11 (**-0.9%**); 27B 3-GPU tensor pp512 2257.3 -> 2253.2 (-0.2%), tg128 38.46 ->
+  38.28 (**-0.5%**).  Reserves byte-identical (27B ub2048 q8_0: dev 1920.3284 / host 880.3360).
+- op suites **with the fix active**: `test-backend-ops -o FLASH_ATTN_EXT` **4591/4591, 4/4 backends**;
+  `-o GATED_DELTA_NET` 46/46, 2/2.  Quantized-KV coherence (the only configs that move) —
+  gemma-4-E4B / 27B / qwen4exp with q8_0 KV: deterministic across runs and coherent.
+- clean-apply: fresh `9113cc188` + `scripts/apply-all.sh` -> strict **15/15 `git am`**, **0 whitespace
+  warnings**, applied tree == **`4104e7d34dd8cf9cb5488d46dcbba1b17eaa32d3`**.
+- block-15 beta re-cut against the new base: **`0c8099ca2`**, tree **`7335b923d`** — metadata/offset
+  only, 0 changed body lines (block 15's `fattn.cu` hunks sit at lines 166-326, the fix at ~690).
+
+**New canonical tip `1bcf4e82d`**, tree `4104e7d34` (block 08 = `38cffdece`; blocks 09-14 got new SHAs,
+bodies metadata-only — 2 lines each).  `rdna-boosts-all.patch` refreshed (95 files).
+
+**This is NOT F2 cause 2.**  qwen4exp's `W >= 5` residual (`{1..4} {5} {6,7} {8}`) is **completely
+unchanged** by this fix (W=1,4 `3adeb313042a`, W=5 `c999233926f0`, W=8 `c56ebb61963a`), which
+**refutes the "F1 and F2 cause 2 share a cause" hypothesis** — cause 2 is not the kernel-family
+chooser (it is a matmul/MoE dispatch band, still open).
+
+**F3 refinement.**  The "slow pure" KV types are not missing a native kernel: they are rejected by
+`ggml_cuda_fattn_kv_type_supported()` unless the build sets **`GGML_CUDA_FA_ALL_QUANTS`** (this build:
+OFF), so `ggml_cuda_get_best_fattn_kernel()` returns `NONE` *before* the VEC/TILE choice (0 `[FATPATH]`
+lines for `q4_1` vs 1+ for `q8_0`) and the attention takes the generic fallback — width-invariant by
+construction (hence pure) and ~3.4x slower.  F3's first experiment is therefore a build-flag A/B.
+
+## 2026-09-11 (2) — Block 14 amended: the fused hyper-connection ops serve the decode/verify band (qwen4exp width purity, cause 1 of 2)
+
+**What changed.**  `ggml/src/ggml-cuda/hc-mix.cu` (`ggml_cuda_op_hc_mix`, `ggml_cuda_op_hc_combine`) and
+the two graph gates in `src/models/qwen4exp.cpp` no longer require `nt == 1`: the fused
+hyper-connection (HC) chain now serves the whole **decode/verify band `1 <= nt <= 8`**
+(`HC_FUSED_MAX_TOKENS`, asserted in both ops).  The four mix kernels and the combine kernel take the
+token index from `blockIdx.y` and offset every per-token pointer with the tensor's own stride
+(`inject` is read with its view stride); at `nt == 1` every added term is zero, so the decode result is
+unchanged (verified byte-identical for f16/bf16/q8_0/q4_0).  A `<= 8`-token **prefill** chunk also takes
+the fused path — it cannot be told apart from a verify batch, and both must use the decode arithmetic;
+wider chunks keep the unfused chain.  The ops are otherwise the same arithmetic, so no kernel numerics
+were touched (the env fallback `LLAMA_FUSED_HC_MIX=0 LLAMA_FUSED_HC_COMBINE=0` reproduces the pre-fix
+adaptive-MTP numbers exactly).
+
+**Why.**  qwen4exp failed the decode==verify invariant ("F2"): a 1-token decode used the fused HC ops
+while an n-token verify batch used the unfused chain, so the two computed the same position differently
+and plain decode and `draft-mtp` disagreed.  Root-caused 2026-09-11 into **two stacked causes** (the
+second is a `W >= 5` kernel-dispatch band shared with F1); this lands **cause 1**, as a block-14
+amendment (block 14 introduced `hc-mix.cu` and the qwen4exp HC paths, so it owns them — the same
+owner-based rule used for the block-02/12/13 amendments, not block 00).
+
+**Measured** (3x gfx1201, ROCm `/opt/rocm-7.14-gfx1201`, unpinned):
+- width probe, qwen4exp IQ4_XS f16 KV P=256 RS=0: `-sm layer` W=1..4 all **`3adeb313042a871b`** (was
+  W=1 `3adeb313042a` + W=2..4 `044715b66e72f077`), `-sm tensor` W=1..4 all **`dcf1ae667f730879`**;
+  **W=1 byte-identical to the pre-fix build on both splits and for every KV type** (f16
+  `3adeb313042a`, bf16 `42e1bcfa57c1`, q8_0 `cb018394fd37`, q4_0 `688835658f30`).
+- W=5 `c999233926f0` / W=6,7 `a8c532e12f9c` / W=8 `c56ebb61963a` (`-sm layer`) still grouped = **cause 2**,
+  the `ncols_dst`/`ne11` selection band at `W >= 5`, shared with the `q8_0`/`q4_0` KV impurity (F1).
+- greedy text: plain == `--spec-type draft-mtp --spec-draft-n-max 3`, byte-identical (3275 chars);
+  `n_max 7` still differs (cause 2).  qwen4exp is therefore width-pure for **`n_max <= 3`**.
+- adaptive-MTP (f16 KV, n=96): acceptance **0.50000 -> 0.76744**, MTP generation **63.3 -> 79.9 t/s**.
+  With a `q8_0` KV cache: 0.50000 -> 0.43089 — that configuration is already width-impure via F1 (its
+  W=1 decode is also unchanged), so it must be re-measured once F1 is fixed; recorded, not gated.
+- perf: `-sm tensor` f16 pp512 1288-1300 (**parity**), tg128 48.30/48.72 (**decode unchanged** vs the
+  pre-fix build, and the fusion's +14% over the unfused fallback 42.28/42.32 is kept).
+- no regressions: 27B 1 GPU W=1/W=8 `4089b4d4`, W=9 `72af52db`; MoE W1 `ac8825358d9adfda` / W3
+  `bd138ad2326fbbf2`; reserves byte-identical (qwen4exp ub2048 q8_0 dev 6690.3987 / host 1262.6954 /
+  kvbuf 956.26; f16 6642.1331 / 1262.4297 / 1800.00); `test-backend-ops -o FLASH_ATTN_EXT` and
+  `-o GATED_DELTA_NET` both 4/4 OK; `llama-batched-bench` B=1..8 clean.
+- clean-apply: fresh `9113cc188` + `scripts/apply-all.sh` -> strict **15/15 `git am`**, **0 whitespace
+  warnings**, applied tree == canonical **`e36263da57b8985cb98018af59fe639be0290dc4`**.
+- the block-15 beta patch was re-cut against the new base (**beta tip `54859fdda`**, tree
+  **`543ccc015`**, parent `1d8f53594`): metadata/offset-only, **0 changed body lines**.
+
+**New canonical tip `1d8f53594`**, tree `e36263da5`.  Blocks 00-13 are byte-identical to the previous
+regeneration; only `patches/0014-…` changed (the `From`/`index`/hunk-offset metadata plus the band fix).
+
+**Follow-ups.**  Cause 2 (`W >= 5`) — fix together with F1/F3 (`wip/kv-quant-purity-followups/`);
+the HC ops have no `test-backend-ops` coverage (a CUDA-vs-CPU band test would close that gap).
+
+- **Block 15 beta revalidation (2026-09-11): re-cut against the current 15-patch delivery + full re-validation.**
+  The Block-15 beta patch was cut on `b425aa8f7` (block 14 of the old **14-block** chain, block 13
+  `e61676292`) — before block 00 existed and before the 2026-09-11 block-02/12/13 amendments — so it
+  was re-cut against the current delivery (base `389c5341f`, tree `928852cdc`) and re-validated end to
+  end.  Block 15 is still **staged in `beta/block-15-campaign-wins/`, NOT a delivery patch**; this is a
+  beta-record update, not a delivery change (no `patches/` file and no block SHA moved).
+
+  - **Re-cut**: new beta tip **`fe4f55278`** (tree `ffe197e2f`, parent `389c5341f`); the patch in the
+    beta directory was replaced.  Measured dependency delta: **exactly one file** —
+    `ggml/src/ggml-cuda/fattn-common.cuh` `7442bc22a` → `22eec7d57`, i.e. block 00's
+    `ntiles_dst_eff` fix inside `launch_fattn`; the other 22 touched files are byte-identical to the
+    cut base, so the re-cut changes only the `From` line, that one `index` line and one `@@` hunk
+    header (+8 offset).
+  - **Numbering correction**: the first draft of the revalidation plan claimed the beta patch had to be
+    renumbered `[PATCH 15/15]` → `[PATCH 16/16]`.  That was **wrong**: `make-patches.sh` uses
+    `git format-patch --start-number 0`, so the denominator is the *last block index* — the delivered
+    15-patch set is `[PATCH 00/14]`…`[PATCH 14/14]` and block 15 is correctly `[PATCH 15/15]`.
+    Verified by regenerating the 16-commit range with the same convention: all 15 delivery patch
+    *bodies* byte-identical, block 15 emitted as `[PATCH 15/15]`.
+  - **Clean-apply**: fresh `9113cc188` + `scripts/apply-all.sh` → strict **15/15**, **0 whitespace
+    warnings**, tree `928852cdc`; + the re-cut block-15 patch → 16 commits, tree `ffe197e2f`.
+  - **Result: every 2026-09-10 Block-15 claim reproduced.**  Reserves to the last decimal (27B
+    `1920.3284/880.3360` → `1121.1252/81.1329`; 4B `1800.3284/840.3360` → `1001.1252/41.1329` →
+    `257.1252/41.1329`; gemma-4-E4B/E4B-31B and the qwen4exp W1/W2/W3 chain incl. indexer KV
+    `956.26` → `318.76` and the bf16/V5 table with bf16+V5 costing exactly f16); the 27B width-purity
+    probe hashes **identical to the delivered reference** (`4089b4d4` / `a4817ee6` / `91434ea9`,
+    `W=9` `72af52db`/`b059daa6`/`bc3faabd`) so `n_max <= 7` holds and block 15 changes no FA numerics;
+    V4/V5 on == off **bit-identically** (the flagged `launch_fattn` risk is cleared); same-seed output
+    byte-identical across gates on 4B/27B (short + 40k)/both SWA gemmas/qwen4exp; MoE asterisk intact
+    (`ac8825358d9adfda`/`bd138ad2326fbbf2`, `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` → both
+    `bd138ad2326fbbf2`); MTP 27B `0.90789` and MoE `0.58378` identical on both builds; op suites
+    `FLASH_ATTN_EXT` **7859/7859 ROCm0 + 7859/7859 CPU** (6 derived), `GATED_DELTA_NET` OK,
+    `test-alloc`/`test-batch-alloc` clean, W4 round trip 16.00 → 56.00 → 16.00 MiB; cost inside the
+    documented envelope (4B prefill V3 −1.6 % / V4 −1.75 %, 27B V3 −0.3 %, decode flat; vs the
+    delivery build 27B pp512 −1.7 % / tg128 flat, MoE pp512 −0.3 % / tg128 −1.25 %).  gfx1151 was
+    **not** re-run (no such hardware on this host).
+  - **Three PRE-EXISTING findings (not Block-15 regressions — identical hashes on the delivery build),
+    now tracked in `wip/kv-quant-purity-followups/` + `TODO.md` + `GREEDY-PURITY.md` §12:** (F1) a
+    **q8_0 or q4_0 K/V cache breaks the dense `n_max <= 7` purity guarantee** (`W=1 == W=2` then
+    `W=3..8`; text-level plain `8ed58aa9` vs spec `da56855b` on the 27B) — the impure set is exactly
+    the two types with a fast native both-quantized FA path; (F2) qwen4exp's fused sparse QSA path is
+    not width-invariant; (F3) the sub-`q8_0` quants (q4_1/q5_0/q5_1/iq4_nl) are pure and 1800–2400 MiB
+    but ~3.4x slower because they have no native FA path.  **Policy decided (maintainer
+    2026-09-11): differing K/V cache types are rejected as an accepted limitation** (mixed pairs are
+    1.7–3.6x slower than the same-type equivalent and never smaller; upstream #25871 already enforces
+    same-K/V for DeepSeek V4).
+  - Records updated: `beta/block-15-campaign-wins/{README,HANDOVER,BETA-TESTING}.md`,
+    `GREEDY-PURITY.md` §12, `TODO.md`, `AGENTS.md`, `wip/kv-quant-purity-followups/`.
+
+- **Block 13 amendment (2026-09-11, second): MoE `MUL_MAT_ID` decode/verify dispatch fix + the shared-expert fusion kill-switch.**
+  Root-causes and closes the qwen35moe batch-width residual
+  (`wip/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md` Part 2).  The residual was
+  **not** in the MoE expert GEMM kernels.  A per-node, stride-aware dump of the
+  decode graph that also covers fused-window destinations localised the first
+  divergence to the **fused shared-expert window**
+  (`ggml_cuda_op_shexp_down_gate`, gated `// decode only` on `ne[1] == 1`).  Two
+  independent causes, both in that region:
+
+  1. **`MUL_MAT_ID` never used the dedicated MoE kernel at `ncols_dst == 1`.**
+     `mul_mat_vec_q_switch_ncols_dst` returned early only for `has_ids &&
+     ncols_dst > 1`, so a single-token `MUL_MAT_ID` fell through to the **dense
+     ksplit kernel with an ids gather** while a multi-token verify batch ran
+     `mul_mat_vec_q_moe` -- two kernels, two accumulation orders, so a 1-token
+     decode and an n-token verify batch of the same MoE matmul were not
+     bit-identical.  The dense half of this was fixed earlier the same day (dense
+     `MUL_MAT` rows always ksplit); the MMID half was still open
+     ("`MUL_MAT_ID`/MoE keeps the item-split").  **Fixed**: route all `MUL_MAT_ID`
+     through the MoE kernel -- it is column-generic (one warp per token column;
+     `n_groups` and `warp_reduce_sum` depend only on `warp_size`), so decode and
+     verify now share one path.  **+6.2% MoE decode** (tg128 95.62 -> 101.52),
+     +1.4% pp512 (4790.6 -> 4858.6); dense 27B flat (tg128 31.95 -> 32.00,
+     pp512 2021.9 -> 2033.5).
+  2. **The fused shared-expert epilogue is not bit-exact with the unfused chain**:
+     its gate dot uses `shexp_gate_sigmoid`'s own reduction order (not the
+     standalone mmvq order), and its epilogue multiply was contracted into an FMA.
+     The FMA is now removed (`__fmul_rn`, one rounding, matching the separate MUL
+     kernel) -- necessary but not sufficient while the gate reduction differs.
+     Making the whole window bit-exact needs the gate dot to reproduce
+     `mul_mat_vec_q`'s order; scoped as future work.  The fusion is worth **+3.1%
+     MoE decode** (101.5 vs 98.5 t/s), so it stays ON by default behind a
+     first-class kill-switch: **`GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1`**.
+
+  Verified: with the kill-switch set (plus fix 1) qwen35moe decode is
+  **bit-identical** to the verify batch (`bd138ad2` both -- the W=3 value, so the
+  decode path moves and the reference is preserved); by default both hashes are
+  unchanged from the previous tip (no regression).  MoE MTP gate unchanged
+  (acceptance 0.58378 = the canonical baseline exactly; per-pos 0.785/0.575/0.382;
+  draft 130.9 vs plain 91.6 t/s).  Dense gates unchanged (`none == n_max 3 ==
+  n_max 7` = `13acc229`; `n_max 8` still divergent = cause B).
+  `test-backend-ops -o GATED_DELTA_NET` 2/2 OK.
+  **Accepted residual**: by default the MoE decode/verify pair is still not
+  byte-identical -- MoE is exempt from that gate by
+  `benchmarks/mtp-adaptive-methodology.md` rule 3, and the gate it *is* held to
+  passes.  Canonical chain re-cut: block 13 `c43beca1b` -> `855515420`, block 14
+  `daf32f804` -> `389c5341f`, tip **`389c5341f`**, net tree **`928852cdc`**;
+  clean-apply strict 15/15 `git am`, zero whitespace warnings, applied tree ==
+  canonical.  All temporary instrumentation reverted.
+
+- **Correction: `GGML_CUDA_ALLREDUCE=nccl` was never a bit-identical reference under `-sm tensor` (2026-09-11).**
+  Several docs used "hybrid vs RCCL coherence IDENTICAL" as a validation gate
+  (`AGENTS.md`'s verify recipe, `patches/README.md` block-13 note, `RUN.md`).
+  It does not hold: the internal AR pipeline always BF16-round-trips
+  (`GGML_CUDA_AR_BF16_THRESHOLD` defaults to 1) while the NCCL path reduces
+  *small* tensors in FP32 ("Reduces as FP32 for small tensors and BF16 for
+  large", `allreduce.cu`), so the two backends differ by design.  Measured
+  2-GPU `-sm tensor`, 27B Q8_0, 300-token greedy `--spec-type none`:
+  text `6e8ccd25` (hybrid) vs `6129e077` (nccl), and the token-0 logits differ
+  in the decode/verify band (W=6: `a4817ee6` vs `73ff91bf`).  The gate only
+  holds where no cross-device reduction happens at all -- 1 GPU and
+  `-sm layer` both gave `8fd24746` under either backend, because the AR is
+  never reached.  Past records that quote the gate (e.g. `BASELINE.md`'s dated
+  validation lines) are left as written per the dated-record policy; they were
+  probably true at the text level for the split mode used, or a near-tie
+  collision.  Docs corrected: `AGENTS.md` (verify recipe -- now says
+  "smoke comparison only", with the measurements), `patches/README.md`
+  (block-13 note), `wip/sm-tensor-plain-vs-spec/RUN.md` (the gate list).
+  Not a correctness bug: the default (hybrid) path is self-consistent, which is
+  what the n_max sweep gates.  It is a reminder that **text equality is
+  evidence for purity, never evidence against divergence** -- the same trap as
+  the 3-GPU `n_max = 8` false negative recorded in the entry above.
+
+- **Block 12 amendment: verification matrix completed, and the boundary is `W = 8` / `n_max = 7`, not `n_max = 8` (2026-09-11).**
+  Completes the entry above with the full per-configuration probe matrix and a
+  correction to how the boundary is established.  The verified guarantee is
+  **`--spec-draft-n-max <= 7`** (an 8-token verify batch) on the dense 27B with
+  MTP, for 1 GPU, 2-GPU `-sm layer`, 2-GPU `-sm tensor` and 3-GPU
+  `-sm tensor` alike; the first violating depth is `n_max = 8` (a 9-token
+  batch).  The target verifies the drafts *plus* the last committed token, so
+  `K = n_max + 1` -- `n_max = 8` is a 9-token batch, one past the designed
+  `Q->ne[1] > 8` limit (cause B).
+  Raw-logit probe (27B Q8_0, `RS = 0`, P = 256), `W = 1..8` -> `W = 9`:
+  `4089b4d4` -> `72af52db` (1 GPU); `4089b4d4` -> `72af52db` (2-GPU `-sm layer`);
+  `a4817ee6` -> `b059daa6` (2-GPU `-sm tensor`); `91434ea9` -> `bc3faabd`
+  (3-GPU `-sm tensor`).  Uniform: bit-identical through `W = 8` everywhere,
+  divergent at `W = 9` everywhere.  1 GPU and `-sm layer` share a hash because
+  layer splitting changes no kernel; tensor splitting is the only configuration
+  with different numeric paths (and the only one cause A could affect).
+  **Method correction:** the 3-GPU 300-token *text* gate at `n_max = 8` matched
+  the plain run (`5037ef2e` both) even though the logits had already diverged --
+  no greedy near-tie flipped inside that window.  Text equality is evidence for
+  purity, never evidence against divergence; boundaries must be established with
+  the probe.  (This is the near-tie rarity noted in
+  `wip/sm-tensor-plain-vs-spec/HANDOVER-2026-09-11.md`.)
+  Cause B is left as-is by maintainer decision: correctness through `W = 8`
+  is already far beyond what upstream delivers (upstream's CPU path diverges at
+  the first width step, `W = 2`), and removing it would give up WMMA for
+  9..N-token batches.  The gain from the block-12 fix (+12% MTP) is retained.
+
+- **Block 12 amended: the hybrid all-reduce's size-based dispatch changed the reduction algorithm with the batch width (2026-09-11).**
+  `ggml_backend_cuda_comm_is_small()` sent reductions below a per-device-count
+  element count to the internal host-staged pipeline and everything above it to
+  NCCL.  The two paths are **not bit-identical** (different summation order;
+  the internal path always does the FP32->BF16 round-trip).  Under `-sm tensor`
+  the reduced tensors scale with the batch width (`ne = ne0 * n_tokens`; ne0 =
+  5120 on the 27B), so with the old 2-device value 32768 a **7-token**
+  speculative verify batch (35840 elements) was reduced by NCCL while 1..6-token
+  decode stayed on the internal pipeline: the same logical reduction, a
+  different algorithm, purely because the batch got one token wider.  This -- not
+  the GDN, and not MMVQ -- is what the earlier entries in this log called a
+  pre-existing `n_max >= 6` divergence for 2-GPU `-sm tensor`.  (A second,
+  *separate and deliberate* boundary remains at `W >= 9`: the FA launcher's
+  tile-vs-WMMA switch at `Q->ne[1] > 8`, which caps the guaranteed range at
+  `n_max <= 7` by design.  `GREEDY-PURITY.md` section 11 now states both causes
+  and the per-configuration ranges.)
+  **Fix:** raise the 2-device crossover 32768 -> 131072 (the 3-device value).
+  The largest verify batch (`--spec-draft-n-max 16` -> 17 tokens = 87040
+  elements) stays well under it, and still far below the internal pipeline's own
+  1 MB (262144 element) cap, so nothing is pushed off the fast path.  Only
+  7..25-token tensors change path; one-token decode and prefill (>25 tokens) are
+  untouched.
+  **Evidence** (27B Q8_0, 2-GPU tensor, `-ts 1/1`, probe/`llama-cli`):
+  `GGML_CUDA_ALLREDUCE=internal` (one algorithm for every size) makes probe
+  `W = 1/6/7/8` all `a4817ee6`; the fix does the same, with `W <= 6` keeping
+  their previous hash, i.e. plain decode is bit-unchanged and only `W = 7,8`
+  move onto the internal pipeline.  Text `none == n4 == n6 == n7` (`6e8ccd25`;
+  previously pure only to `n_max 4`/5).  1-GPU `W=1 == W=8`; 3-GPU text
+  `none == n6`; GDN K-independence `RS=6 W=6 == RS=0 W=1`; determinism `W=7`
+  twice identical.
+  **Perf is a win on both axes:** MTP `n_max 6` acceptance 0.509 -> 0.533 and
+  63.6 -> 71.3 t/s (+12.1%); `n_max 12` 51.7 -> 58.0 t/s (+12.2%); llama-bench
+  pp512 2009.08 -> 2004.12, pp4096 1905.00 -> 1907.41, tg128 31.92 -> 31.97
+  (all unchanged within noise).
+  **Localisation method** (temporary instrumentation, since reverted): a
+  backend-side per-node digest dump in `ggml_backend_cuda_graph_compute`, gated
+  on a phase file, reading each tensor through its own `nb[]` strides after a
+  device sync.  `cb_eval` is unusable for this (it changes MoE numerics and
+  aborts in the meta backend under tensor split), and `ggml_backend_tensor_get`
+  flattens from the view's base pointer ignoring `nb[]`, which alone produced a
+  field of false positives.  The dump showed the layer-0 GDN chain bit-exact and
+  the first divergence exactly at the first cross-device reduction
+  (`attn_residual-0`), whose buffer the meta backend rewrites in place between
+  the producing MUL_MAT and its consumer.
+  Canonical: block 12 `eec68b2ad` -> `cac14423e` (blocks 13/14 re-cut: `070096e16`
+  -> `c43beca1b`, `30d119ea9` -> `daf32f804`), tip `daf32f804`, net tree
+  `10f94d635`; clean-apply strict 15/15 `git am`, zero whitespace, applied tree
+  == canonical; blocks 00-11 bodies byte-identical.
+
+- **Block 02 amended (final form): the whole-batch K-independent chunked GDN prefill — free, no tail, no gate (2026-09-11).**
+  Follows the KTAIL=16 entry below, which it supersedes.  Option B from
+  `wip/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md`: instead of *sharing a
+  sequential tail* between the plain (`K == 1`) and MTP (`K > 1`) prefills, both
+  paths now make the **same call** — a batch with more than `max(K, 16)` tokens
+  is chunked **whole**, exactly what `K == 1` already did, and anything smaller
+  stays on the sequential kernel.  No tail, so the previous -0.3..-0.8 % tail
+  cost goes to **zero**: 27B Q8_0 1 GPU pp512/2048/4096 = 1385.3/1356.4/1328.2
+  vs 1384.7/1355.0/1327.8 for the old K-dependent boundary (parity), tg
+  unchanged.  A batch larger than `max(K, 16)` cannot be a verify batch (those
+  decode `<= K` tokens) and is never rolled back into, so its K snapshots are
+  skipped; every verify batch keeps them.
+  **Guard added** (the invariant is empirical): `llama_memory_recurrent::seq_rm`
+  tracks the last batch's per-seq token count and logs a once-only warning if a
+  rollback ever crosses that boundary.  Measured: 449 rollbacks over llama-cli
+  `draft-mtp` n_max 1/4/8/16 + 20 in llama-server `--cache-reuse`, all preceded
+  by a `<= K`-token batch, 0 warnings.
+  **Removed**: `GGML_CUDA_GDN_ALIGN_BOUNDARY`, the `align_boundary` variable and
+  both K-dependent branches (~118 lines) — they were unreachable with the gate
+  ON, and the opt-out is superseded by `GGML_CUDA_GDN_CHUNKED=0`, which is
+  *both* correct (all snapshots written) and bit-identical plain-vs-MTP.
+  **Gate re-verification** (all corrected against the new build): 27B 2-GPU
+  tensor `none == n1 == n4 == n5` (`6e8ccd25`), 3-GPU tensor `none == n4`,
+  1-GPU 4B probe `671d6096`, 27B prefill probe `W = 1/3/5/6` all `a4817ee6`
+  with `RS=6 W=6 == RS=0 W=1` (prefill now K-independent), `test-backend-ops -o
+  GATED_DELTA_NET` OK, 3x determinism check identical.
+  **Correction (important):** the `n_max <= 15` purity claim in the entries
+  below — and in every doc — was **wrong**; it was never validated past
+  `n_max = 4`.  The real `none == draft-mtp` range is **`n_max <= 5`**, and the
+  cause is a **pre-existing** multi-token-verify-batch MUL_MAT dispatch
+  difference (identical divergence pattern on the delivered KTAIL=16 build;
+  pure at `RS=0` up to `W = 6`, breaks at `W = 7`, again at `W >= 9` where MMVQ
+  hands over to MMQ).  Upstream master is affected too and *worse*: on upstream
+  `9cf3bf256` (CPU, 4B) `W = 1` already differs from `W >= 2`.  Docs corrected
+  (`GREEDY-PURITY.md` §11, `benchmarks/mtp-adaptive-methodology.md` rule 4,
+  `patches/README.md`, `AGENTS.md`); root-causing it is
+  `wip/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md` Part 3.
+  Canonical re-cut: block 02 `63f8ab023` -> `6e81ed5ed`, tip **`30d119ea9`**,
+  net tree **`29714ad1f`**; clean-apply strict 15/15 `git am`, zero whitespace,
+  applied tree == canonical.
+
+- **Block 02 amended: GDN alignment tail shortened to `KTAIL=16` (2026-09-11). — SUPERSEDED by the entry above.**  The aligned
+  boundary's cost is entirely its sequential tail (which writes the K rollback snapshots), and the
+  tail was 64 — ~16x longer than the default `--spec-draft-n-max 3` needs.  `KTAIL=16` covers
+  `K <= 16` / `n_max <= 15`, including adaptive MTP's recommended `n_max = 12`; for deeper drafts the
+  new `K > 16 ? K : 16` floor keeps the snapshots exact (those reproduce the pre-alignment `K > 1`
+  boundary, i.e. correct-but-not-bit-identical, instead of reading stale snapshot slots).  Measured
+  (27B Q8_0, 1 GPU, interleaved `-r 5`): `KTAIL=64` ≈ -1.5 %, **`KTAIL=16` ≈ -0.3..-0.8 %**,
+  `KTAIL=8` ≈ 0; decode unchanged.  Bit-identity re-verified with `KTAIL=16`: 27B 2-GPU tensor
+  probe W=1/3/5 and text `none == n1 == n2 == n4` (`e386b50d`), 3-GPU tensor `none == n4`, 4B 1-GPU.
+  Canonical re-cut: block 02 `d60bb52ef` -> `63f8ab023`, tip **`30d119ea9`**, net tree
+  **`29714ad1f`**; clean-apply strict 15/15 `git am`, zero whitespace, applied tree == canonical.
+  Follow-ups (free GDN prefill alignment + the MoE batch-width residual) written up in
+  `wip/sm-tensor-plain-vs-spec/FOLLOWUPS-2026-09-11.md`.
+
+- **Block 02 amended: `GGML_CUDA_GDN_ALIGN_BOUNDARY` flipped to default ON (opt-out), 2026-09-11.**
+  The K-independent chunked-GDN boundary is now enabled by default (`GGML_CUDA_GDN_ALIGN_BOUNDARY=0`
+  opts out and restores the K-dependent boundary).  This is the second of the two independent fixes
+  required for `--spec-type none == draft-mtp`: with the block-13 dense-MMVQ alignment in place, the
+  default is `none == n1 == n2 == n4` on 27B 2-GPU tensor (`5037ef2e`), 3-GPU tensor (`f60b79d0`),
+  2-GPU layer and 1-GPU (`7d566fee`), and on the 4B 1-GPU probe.  Cost of the default
+  (27B Q8_0, 1 GPU, llama-bench, `-r 5`, two alternating runs): pp512 1393.7/1384.5 ->
+  1363.6/1363.8 (**-1.8 / -1.5 %**), pp2048 1362.2/1358.3 -> 1337.3/1338.1 (-1.8 / -1.5 %),
+  pp4096 1329.5/1328.5 -> 1309.2/1309.6 (-1.5 %); decode unchanged (tg128 20.43 -> 20.40).  The
+  maintainer accepted the prefill cost to close the divergence.  Canonical chain re-cut: block 02
+  `38641280b` -> `d60bb52ef`, tip **`33ccf7e28`**, net tree **`31e153fe3`** (later re-cut again for KTAIL=16:
+tip `30d119ea9`, tree `29714ad1f`); clean-apply strict 15/15
+  `git am`, zero whitespace warnings, applied tree == canonical.
+
+- **Block 13 amended: dense decode/verify MMVQ kernel alignment (`mmvq.cu`, 2026-09-11).**
+  Closes the remaining batch-width half of the `-sm tensor` plain-vs-spec divergence.  Root cause:
+  the block-13 `ncols_dst == 1` dispatch kept **dense** rows with `K < 4096` on the item-split/rpb
+  kernel while the ncols 2..8 dispatch (and `K >= 4096` ncols==1) unconditionally use the ksplit
+  kernel; the two accumulate K in different orders, so a single-token dense `MUL_MAT` is not
+  row-identical to the same row in a 2..8-token verify batch (~1e-6 at the first divergent
+  projection, amplified by the recurrent GDN).  Visible as `--spec-type none` != `draft-mtp` on
+  small dense models (`n_embd < 4096`, e.g. Qwen3.5-4B, the cheap 1-GPU repro) and under
+  `-sm tensor` on any model whose per-GPU K shard drops below 4096 (Qwen3.8-27B 5120 -> 2560).
+  Fix: `!has_ids || ncols_x >= 4096` — dense rows always ksplit; `MUL_MAT_ID`/MoE keeps the
+  item-split (its multi-token kernel is `mul_mat_vec_q_moe`).  Verified per-process (token-0 logit
+  hash, callback-free): 4B 1-GPU and 27B 2-GPU-tensor W=1/3/5 bit-identical (was 0.133 on the
+  27B).  Perf neutral (4B/27B/MoE-A3B within noise, MoE tg128 95.66 -> 96.02); MTP gates
+  0.487/36.5 (dense) and 0.675/153.1 (MoE); `GATED_DELTA_NET` 46/46; hybrid-vs-NCCL coherence
+  identical.  **The default-config `-sm tensor` text equality additionally requires the block-02
+  `GGML_CUDA_GDN_ALIGN_BOUNDARY=1` gate** (K-dependent chunked-GDN prefill boundary); that gate
+  stays opt-in because it costs ~2-2.6% prefill.  Canonical chain re-cut: block 13
+  `fc7f52f96` -> `029b07b30`, tip **`27bd754b6`**, net tree **`c0775c33c`**; clean-apply strict
+  15/15 `git am`, zero whitespace warnings, applied tree == canonical.  Record:
+  `wip/sm-tensor-plain-vs-spec/HANDOVER-2026-09-11.md`; block-13 notes in `patches/README.md`.
+
+- **Block 02 amended: opt-in K-independent chunked-GDN boundary (`GGML_CUDA_GDN_ALIGN_BOUNDARY=1`, 2026-09-11).**
+  Fixes the fork-only plain-vs-spec divergence found during the gfx1151 issue-#25 validation (the issue
+  #25 *follow-up*): the chunked GDN prefill had a **K-dependent** chunk/sequential boundary (plain
+  `K == 1` chunked the whole prompt; MTP `K == n_max + 1` chunked `n_tokens - K` + a K-token tail), so
+  the post-prefill SSM state depended on `n_rs_seq` and `--spec-type none` disagreed with `draft-mtp`
+  (greedy near-ties flipped).  The amendment adds a gated third branch that chunks `n_tokens - 64` and
+  runs the sequential kernel over the last 64 for both `K == 1` and `K > 1`, giving one boundary and one
+  state; the tail also emits the K snapshots (rollback <= 63 exact), and `n_seqs > 1` keeps the old
+  whole-ubatch path.  **Default OFF** — the fork's existing boundary is deliberate and ~1.1-1.2 % faster
+  prefill; the gate only guards the two existing branch conditions, so the default output is
+  **byte-identical** (`d9bf6850`), while with the gate on `none == n2 == n4` (`1a9ef0a1`, which also
+  equals the `GGML_CUDA_GDN_CHUNKED=0` reference on the short prompts).  gfx1201 probe (`RS=from_w`,
+  P=256): `W1-W3/W3-W5 = 0.136693/0.182106` default (unchanged) -> `0.000000/0.000000` gated;
+  `test-backend-ops -o GATED_DELTA_NET` 46/46 in default, gated and gated+fp32.  Record:
+  `wip/issue-25-mtp-batch-width/GDN-CHUNKED-PREFILL-FIX.md`.  Canonical fork rebuilt at `9113cc188`,
+  block 02 (`5cbfbafd9` -> `38641280b`) amended by rebase, new tip **`7b79930b2`**, net tree
+  `fcf3e4bb7`; clean-apply **strict 15/15 `git am`**, zero whitespace warnings, applied tree ==
+  canonical.  A separate `-sm tensor` (2/3-GPU) plain-vs-spec divergence — independent of GDN and of
+  this gate — is documented there as an open follow-up (the server's 3-GPU tensor-split config is
+  affected).
+
+- **Block 00 (structural and architecture fixes) added; the set is now 15 patches and the masked-V
+  freed-cell fixes are re-homed (2026-09-10).**  A new first block, `patches/0000`, holds baseline-level
+  fixes every later block builds on:
+  1. **FA small-batch KV-split width invariance (issue #25).**  `launch_fattn`'s non-stream-K
+     `parallel_blocks` heuristic keys off `ntiles_dst`, which is a function of `Q->ne[1]`, so
+     single-token decode (`n_q = 1`) and speculative verify batches (`n_q = 3`, `5`, …) chose different
+     KV splits, fed different partial sums into the online-softmax/PV combine and produced different
+     logits; greedy near-ties then flipped, so MTP `--spec-draft-n-max 2` and `4` streamed apart.  The
+     heuristic now evaluates `ntiles_dst` as if `n_q == 1` for every `n_q <= 8` (prefill unchanged).
+  2. **Vulkan masked-V / freed-cell fixes** (`flash_attn_cm1.comp`, `flash_attn.comp`): dead columns
+     never read V.  These are baseline shaders, so they belong in the structural block.
+  The **HIP** masked-V fixes do **not** belong in block 00: the `fattn-tile.cuh` half uses the native
+  bf16 PV staging (`V_k0`/`KQ_k`/`nv_bfloat162`) that **block 03** introduces, and the
+  `fattn-mma-f16.cuh` half fixes the same class of leak on that path — so, per the maintainer, both HIP
+  halves were **moved into block 03** (the earliest block that exercises the leaking code).  Block 14 no
+  longer carries any masked-V/freed-cell hunk.  The net tree is unchanged from the previous regeneration
+  (`26690e4d9`).  The block-15 attention-memory campaign is unaffected and remains staged in
+  `beta/block-15-campaign-wins/`.
+  Layout: `0000` = block 00, `0001`–`0014` = the old blocks 01–14 (renumbered by
+  `git format-patch --start-number 0`, so the file prefix still equals the block number; the subjects
+  read `[PATCH 00/14]`…`[PATCH 14/14]`).  Canonical fork rebuilt at `9113cc188`, tip **`505637d6e`**;
+  `scripts/apply-all.sh` and `scripts/make-patches.sh` updated (15 blocks, `0000` included);
+  `rdna-boosts-all.patch` regenerated.
+  Validation (3× gfx1201, ROCm 7.14): clean-apply sim → strict **15/15 `git am`, zero whitespace
+  warnings**, applied tree `26690e4d9` == canonical; issue #25 → `--spec-draft-n-max 2 == 4` on 2-GPU
+  p0/p2/p3 and 3-GPU p0, `draft-mtp-adaptive` == both; plain decode (`--spec-type none`) byte-identical
+  to the pre-block-00 canonical on 2-GPU and 1-GPU; MTP acceptance gate holds (dense 0.479, MoE 0.669,
+  MTP >> plain both).  A `structural-fixes` branch (block 00 + blocks 01–14, based directly on
+  `9113cc188` = the fork's master) was pushed to the personal fork for the gfx1151 investigation; the
+  upstream-PR candidate `upstream/UPSTREAM-PR-fa-kv-split-width.{patch,md}` was filed under `upstream/`.
+
 - **Block 15 un-promoted from the delivery — it belongs only in `beta/block-15-campaign-wins/`
   (2026-09-10).**  Block 15 was promoted into `patches/0015` by mistake; the maintainer never
   approved cutting it as a delivery patch.  The delivery is a **14-patch set** again

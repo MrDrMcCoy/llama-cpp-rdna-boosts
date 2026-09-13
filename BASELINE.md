@@ -1,7 +1,7 @@
 # BASELINE - provenance and drift policy
 
-Current state: `main` is the delivery branch carrying the **14-patch set**
-(blocks 01-14) generated against the fork
+Current state: `main` is the delivery branch carrying the **16-patch set**
+(block 00 + blocks 01-15) generated against the fork
 point **llama.cpp master `9113cc188`** (re-based 2026-09-08 from
 `050dde50c`, itself re-based 2026-09-07 from `465e49b9c`, itself
 re-based 2026-09-06 from `9cffdcc80`, itself re-based
@@ -24,16 +24,28 @@ at `192067b72`), `baseline/d222767c7` (validated against `d222767c7`) and
 ## Baseline (current delivery)
 
 
-All 14 patches are generated against **llama.cpp upstream master at
+All 16 patches are generated against **llama.cpp upstream master at
 `9113cc188`** (re-based 2026-09-08 from `050dde50c`, itself re-based
 2026-09-07 from `465e49b9c`, itself re-based
 2026-09-06 from `9cffdcc80`, itself re-based
 2026-09-02 from `0eadefebd`; dated records at the
-bottom of this file): blocks 01-14 = the fork's `rdna-boosts` block
-commits on `9113cc188` (the canonical 14-block tip is block 14
-`b425aa8f7`; **block 15, the attention-memory campaign, is NOT part of the
-delivery** -- it is staged in `beta/block-15-campaign-wins/` and applied
-manually, see `patches/README.md` and `WORKLOG.md`); the reference `~/llama.cpp`
+bottom of this file): block 00 = the structural/architecture fixes added
+2026-09-10 (FA small-batch KV-split width invariance + Vulkan masked-V), and
+blocks 01-15 = the fork's `rdna-boosts` block
+commits on `9113cc188` (the canonical 16-block tip is block 15
+`0f4f83f9e`, promoted 2026-09-12 from `beta/block-15-campaign-wins/`, on top of the 2026-09-12 (13) block-14 QSA indexer-score decode/verify band-uniformity fix -> `d306d4b4b`; block 02 amended 2026-09-11 with the
+K-independent whole-batch chunked GDN prefill and again 2026-09-12 with the rollback-bounded
+chunked threshold (`n_rs_batch`, long-draft speculators) + the pre-batch snapshot slots (free; the
+`GGML_CUDA_GDN_ALIGN_BOUNDARY` gate and its K-dependent branches removed; +
+rollback guard), block 08 amended 2026-09-11 with the decode/verify FA kernel-family fix, the
+quantized-KV-type enablement (`q4_1`/`q5_0`/`q5_1`) and the `iq4_nl` enablement (predicate, the 15
+new vec instances, `dequantize_q4_nl`, the non-contiguous converters), and block 13 amended
+2026-09-11 with the dense ncols==1 ksplit alignment (decode/verify bit-identity), again
+2026-09-12 with the RDNA3_5 single-token-only mmvq fusion skip, and block 14
+amended 2026-09-11 with the hyper-connection decode/verify band fix, the QSA decode arm, the QSA
+quantized-KV enablement + K/V-head chunking fix and the `iq4_nl` QSA/CPU-oracle/test entries;
+**block 15, the attention-memory campaign, is the last delivery patch** -- promoted 2026-09-12 from `beta/block-15-campaign-wins/`,
+see `patches/README.md` and `WORKLOG.md`); the reference `~/llama.cpp`
 `rdna-boosts` branch is *disposable* and had at cut time drifted two
 upstream master commits past the fork point — `f3f1a8f27` (iGPU lazy-
 load default) and `304665fe7` (SYCL IQ-type-for-MoE), both dated after
@@ -41,7 +53,7 @@ load default) and `304665fe7` (SYCL IQ-type-for-MoE), both dated after
 wrongly export those two upstream commits as patches 0001/0002.
 **Always regenerate from a canonical fork rebuilt at `9113cc188` via
 `scripts/apply-all.sh`** (that is what `make-patches.sh`'s default tip
-`b425aa8f7` refers to).  The two commits' content is 106 lines in 3 files
+`0f4f83f9e` refers to).  The two commits' content is 106 lines in 3 files
 (`ggml/src/ggml-sycl/mmvq.cpp`, `ggml/src/ggml-sycl/vecdotq.hpp`,
 `src/llama-model.cpp`) and is deliberately **not** in the delivery — it
 is upstream code past the recorded fork point; it does not touch any
@@ -52,7 +64,10 @@ KV-row-zeroing host gate it replaces is removed — see the WORKLOG entries; blo
 carries only the host-buffer
 rationale marker — upstream #28604 reverted #24233 on 2026-09-08,
 matching its end state; block 12 amended 2026-09-04 with the runtime
-NCCL-failure fallback (issue #13), block 13 amended 2026-09-02 with
+NCCL-failure fallback (issue #13) and 2026-09-11 so the hybrid dispatch's
+small/large crossover does not change the reduction algorithm with the batch
+width (`-sm tensor`, 2-device `32768` -> `131072` elements); block 13 amended
+2026-09-02 with
 two MTP regression fixes, 2026-09-05 with the RDNA3.5/RDNA3.0 gate
 relaxations and 2026-09-06 with the model-neutral Strix MoE mmq folds,
 block 14 (qwen4exp support) promoted from `beta/qwen4exp` 2026-09-07
@@ -130,13 +145,20 @@ validation:
 
 ## Per-block provenance
 
-The CURRENT delivery patches (0001-0014) are the fork's `rdna-boosts` block
+The CURRENT delivery patches (0000-0015) are the fork's `rdna-boosts` block
 commits exported with `git format-patch` (one commit per block; the
-current 14-block set against `9113cc188`:
+current 16-block set against `9113cc188`:
+block 00 = the structural/architecture fixes added 2026-09-10 (FA
+small-batch KV-split width invariance for issue #25 + Vulkan masked-V);
 blocks 01-13 = the `7c4d9c4e0`-based series (block 01 refreshed 2026-09-09 to the llama.cpp
 PR #27210 review head `d236d41a2`, squash — see the WORKLOG entry) with
-block 14 amended 2026-09-10 (kernel-side masked-V fixes replace the
-freed-cell host zeroing; tip `ff2b35f49`; block 14 = the qwen4exp-support delta promoted
+block 03 amended 2026-09-10 (HIP masked-V fixes, re-homed from block 14)
+and block 14 amended 2026-09-10 (the kernel-side masked-V fixes were
+re-homed — Vulkan to block 00, HIP to block 03; the freed-cell host zeroing
+is removed; tip `daf32f804`; block 02 amended 2026-09-11 with the
+K-independent whole-batch chunked GDN prefill (free, no gate, + rollback guard)
+and block 13 amended
+2026-09-11 with the dense ncols==1 ksplit alignment; block 14 = the qwen4exp-support delta promoted
 from `beta/qwen4exp`; re-based 2026-09-08 from the `050dde50c` set
 `90a816a68..3bebffd6b` (block 06 reduced to a marker — see the WORKLOG
 re-base entry); previously the
@@ -164,9 +186,9 @@ to apply against a newer upstream master:
    master and continue.
 3. Do NOT hand-edit the committed patches as the permanent fix: when more
    than one block needs manual re-base hunks, regenerate the whole set from
-   the fork with `scripts/make-patches.sh` (re-exports blocks 01-14 from
+   the fork with `scripts/make-patches.sh` (re-exports blocks 00-15 from
    `9113cc188..<blocks-tip>`; defaults target
-the current 14-block tip `b425aa8f7`), then re-verify the clean-apply
+the current 16-block tip `0f4f83f9e`), then re-verify the clean-apply
 simulation (fresh worktree at the new fork point, `scripts/apply-all.sh`,
 build, coherence) and update the fork point + verification numbers in
 `patches/README.md` and `README.md`.

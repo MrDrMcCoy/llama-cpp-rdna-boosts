@@ -1,6 +1,6 @@
 # llama-cpp-rdna-boosts
 
-A delivery repo for a **14-patch set** of **RDNA3 / RDNA3.5 / RDNA4**
+A delivery repo for a **16-patch set** (block 00 + blocks 01-15) of **RDNA3 / RDNA3.5 / RDNA4**
 (ROCm) feature enhancements and performance fixes for llama.cpp:
 **blocks 01-11** (MTP, GDN, BF16 KV,
 WMMA flash-attn, fused core, k-quant boosts, CUDA prefill-graph skip),
@@ -24,14 +24,14 @@ see
 [Current state](#current-state)) and
 **block 15** (attention-memory wins — a derived kq mask (V3), opt-in
 native q8_0/bf16 K/V (V4/V5), QSA score-chain/bias/indexer-cache pruning
-(W1-W3) and the ggml-alloc unused-view release (W4)) is **NOT part of the
-delivery yet** — it is staged in `beta/block-15-campaign-wins/` and applied
-manually on top of the 14-block tree, pending the maintainer's go-ahead.
+(W1-W3) and the ggml-alloc unused-view release (W4)) is **promoted to the
+delivery** as `patches/0015` (promoted 2026-09-12 from
+`beta/block-15-campaign-wins/`).
 The patches apply to a clean
 llama.cpp checkout at the recorded fork point `9113cc188` (re-based 2026-09-08 from `050dde50c`, itself re-based 2026-09-07 from `465e49b9c`, itself re-based 2026-09-06 from `9cffdcc80`, itself re-based 2026-09-02 from `0eadefebd`).
 
 `scripts/apply-all.sh` automates the apply: it creates a fresh `rdna-boosts`
-branch and applies blocks 01-14 with `git am`, one commit each.
+branch and applies blocks 01-15 with `git am`, one commit each.
 
 ## Supported architectures
 
@@ -71,12 +71,28 @@ MoE MMQ gate now covers RDNA4 + RDNA3_5 + RDNA3_0 (gfx1151 validated
 
 ## Current state
 
-The current delivery is a **14-patch set** for llama.cpp at the fork
-point `9113cc188` (blocks 01-14 in `patches/`, applied with `git am` via
-`scripts/apply-all.sh`; canonical 14-block tip `ff2b35f49` rebuilt at the
-fork point).  **Block 15 (the attention-memory campaign) is staged in
-`beta/block-15-campaign-wins/` and is not delivered yet** -- the notes
-below are the beta record.  The set applies
+The current delivery is a **16-patch set** (block 00 + blocks 01-15) for
+llama.cpp at the fork
+point `9113cc188` (blocks 00-15 in `patches/`, applied with `git am` via
+`scripts/apply-all.sh`; canonical 16-block tip `a05225f73`, net tree
+`2833f1369bdea4cb45f68f85dbb2898fd98aab66`, rebuilt at the
+fork point; block 15 promoted 2026-09-12 from `beta/block-15-campaign-wins/`; block 02 amended 2026-09-12 with the rollback-bounded chunked-GDN threshold
+(`n_rs_batch`) and the pre-batch snapshot slots, block 13 amended 2026-09-11 with the MoE
+decode/verify mmvq band and the fused shared-expert epilogue band, block 14 amended 2026-09-11 with the hyper-connection band, the QSA
+decode arm and the iq4_nl QSA enablement and 2026-09-12 with the configurable QSA prefill arm
+(default `0` = QSA prefill always) + the device-query arm gate, the MTP-export logits-purity fix,
+and the QSA indexer-score decode/verify band-uniformity fix (`ne11 = 4 * n_tps` crossed
+`MMVF_MAX_BATCH_SIZE` at `n_tps = 3`, so the verify batch fell to MMF while decode stayed on MMVF and
+flipped a top-k near-tie; the band now stays on MMVF), and block 08 amended 2026-09-11 with the `iq4_nl` FA
+enablement -- qwen4exp and the MoE are both width-pure for `--spec-draft-n-max <= 7` now, and every
+KV cache type the delivery supports takes the f16 path -- see the WORKLOG entries)
+fork point); block 13 was amended again 2026-09-11 with the MoE `MUL_MAT_ID`
+decode/verify dispatch fix (**+6.2% MoE decode**) and the `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE` kill-switch (see the WORKLOG entry -- the
+decode-only fused shared-expert window is the accepted MoE decode!=verify
+residual).  **Block 15 (the attention-memory campaign) was promoted on
+2026-09-12** to `patches/0015` (previously staged in
+`beta/block-15-campaign-wins/`) -- the notes below are its promotion record.
+The set applies
 **whitespace-clean** (strict `git am`, no 3-way fallback) and each block
 is build- and coherence-verified — see [`MANIFESTS.md`](MANIFESTS.md)
 (apply order + verification contract), [`patches/README.md`](patches/README.md)
@@ -88,71 +104,47 @@ integrations, re-baselines, regenerations) are tracked as dated entries
 — newest first — in **[`WORKLOG.md`](WORKLOG.md)**; the current-state
 summary below is deliberately short and does not repeat them.
 
-- **Latest entry (2026-09-10): block 15 (attention-memory campaign) is
-  STAGED in `beta/block-15-campaign-wins/`, NOT part of the 14-patch
-  delivery** (beta patch tip `377f8e790`; V5 native bf16 K/V and the
-  RDNA3_5/gfx1151 V3 fix amended in).  Seven validated wins
-  in one block, each with an environment A/B gate (V4 is opt-in):
-  **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived
-  QSA per-block bias + visibility + the input-fill null guards
+- **Latest entry (2026-09-12): block 15 (attention-memory campaign)
+  promoted to the delivery** — the beta patch is now
+  `patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch`, so the
+  set is **16 patches** (`0000`-`0015`, block 00 + blocks 01-15) and
+  `scripts/apply-all.sh` / `make-patches.sh` are 16-block flows (block 15
+  is applied with `git am` like every other block; the earlier
+  "beta patch applied manually on top" flow is gone).  Canonical 16-block
+  tip `a05225f73`, net tree `2833f1369bdea4cb45f68f85dbb2898fd98aab66`;
+  strict **16/16** `git am` on a fresh worktree at `9113cc188`, zero
+  whitespace warnings, applied tree == the re-validated beta tree.  The
+  promoted patch is byte-identical to
+  `beta/block-15-campaign-wins/block-15-campaign-wins.patch` except its
+  `From <sha>` line.  The seven wins keep their env gates: **W1**
+  QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived QSA
+  per-block bias + visibility + input-fill null guards
   (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), **W3** keys-only
-  QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), **W4** ggml-alloc
-  unused-view release (no gate; revert patch in
-  `beta/block-15-campaign-wins/ab/`), **V3** derived kq mask
-  (`LLAMA_KQ_MASK_DERIVED`, on by default), **V4** native q8_0 K/V and
-  **V5** native bf16 K/V in the FA kernels (both behind the same
-  `GGML_CUDA_FA_KV_NATIVE`, **default off**).
-  Measured at ctx 204800 / q8_0 KV: qwen4exp ub 2048 compute
-  6690.40 → **3251.39** MiB/GPU and host 1262.70 → **63.69** MiB, plus
-  the indexer KV 956.26 → 318.76 MiB/GPU; dense models −799 MiB/GPU +
-  −799 MiB host (4B 1800.33 → 1001.13, 27B 1920.33 → 1121.13), and a
-  further −744/−632 MiB/GPU with V4 enabled.  With V5 enabled a bf16 KV
-  cache costs exactly an f16 one: 4B 968.86 → **256.86** MiB/GPU
-  (27B 1072.86 → **488.86**, gemma-4-E4B 1062.89 → **404.89**,
-  gemma-4-31B 2068.89 → **716.89**).  Same-seed generated text
-  byte-identical on 4B / 27B / gemma-4-E4B (ISWA) / gemma-4-31B (ISWA)
-  / qwen4exp across every gate combination; MTP acceptance unchanged
-  (27B 0.76744, qwen4exp 0.44262); prefill cost ~1.3 % (V3) and ~1.7-1.9 %
-  more (V4), and −0.2 % (pp2048) to −2.4 % (pp40960) for V5, decode
-  within noise.  RDNA3_5 (gfx1151) validated 2026-09-10: the block-14
-  masked-V fixes and V3/V4/V5 are clean there, V3 is now enabled on the
-  HIP iGPU and a multi-slot context keeps the packed mask, the reserves
-  and Flash-Next W deltas match RDNA4 exactly, and the opt-in arms are
-  cheaper than on RDNA4 (V4 **+2.6 %** at pp20480, V5 −0.4…−0.9 %).
-  Full record in
+  QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), **W4** ggml-alloc unused-view
+  release (no gate), **V3** derived kq mask (`LLAMA_KQ_MASK_DERIVED`, on by
+  default), **V4** native q8_0 K/V and **V5** native bf16 K/V (both behind
+  `GGML_CUDA_FA_KV_NATIVE`, **opt-in, default 0**).  Re-validated 2026-09-11
+  against the then-15-patch delivery and re-cut onto the current base
+  2026-09-12: every reserve number reproduces to the last decimal
+  (qwen4exp ub 2048 compute 6690.40 → 3251.39 MiB/GPU, host 1262.70 →
+  63.69, indexer KV 956.26 → 318.76; dense 4B 1800.33 → 1001.13, 27B
+  1920.33 → 1121.13; a further −744/−632 MiB/GPU with V4), the width
+  probe reproduces the delivered reference hashes
+  (1 GPU `4089b4d4`, 2-GPU tensor `a4817ee6`, 3-GPU tensor `91434ea9`;
+  `W=9` divergent as accepted), `V4/V5` on == off bit-identically, coherence
+  is byte-identical across gates on 4B / both SWA gemmas / 27B (short +
+  40k) / qwen4exp, the op suites pass (`FLASH_ATTN_EXT` 7859/7859 ROCm0 +
+  CPU, `GATED_DELTA_NET` 46/46, `FLASH_ATTN_QSA` 22/22), the MTP gate is
+  unchanged (27B `0.76744`, qwen4exp `0.44262`), and W4 round-trips
+  56.00 → 16.00 MiB.  Cost ~1.3 % prefill / ~0.3 % decode (V4 ~1.7 %,
+  V5 0.2-2.4 %).  One accepted caveat (do not re-report): W2's derived
+  per-block bias is not bit-exact for `iq4_nl` (its greedy text/MTP
+  acceptance differ from the delivery's while the sparse-arm PPL is
+  identical at `6.5244`; `GGML_QSA_DERIVED_*=0` restores the delivery's
+  values).  Full record: `patches/README.md` (block-15 promotion section),
   [`WORKLOG.md`](WORKLOG.md) and
-  [`beta/block-15-campaign-wins/README.md`](beta/block-15-campaign-wins/README.md).
-
-- **D12 closed (2026-09-10): V5 native bf16 K/V**, folded into block 15 the same
-  day.  A bf16 KV cache no longer pays the whole F16 staging scratch in prefill
-  (was **+712 MiB** on the 4B at ctx 204800 / ub 2048, +584 on the 27B, +1352 on
-  gemma-4-31B); with `GGML_CUDA_FA_KV_NATIVE=1` it costs exactly what an f16 cache
-  costs, with byte-identical output.  It ships **opt-in through the same switch as
-  V4** because dropping the scratch costs ~1-2.4 % prefill (growing with the
-  prompt: the conversion itself is free, but the launcher's F16 copy is a dense
-  normalised copy of the interleaved cache view).  Design + measurements:
-  [`wip/arch-independent-memory/BF16-NATIVE-KV-PLAN.md`](wip/arch-independent-memory/BF16-NATIVE-KV-PLAN.md);
-  what would make it free is recorded in [`TODO.md`](TODO.md).  Two pre-existing
-  issues remain **documented, not fixed**: mixed K/V cache types (`bf16`+`q8_0`,
-  `f16`+`q8_0`) fall off the GPU attention path (~⅓ of decode, ~88-92 % of prefill
-  lost) — same-type K/V is the practical choice — and `gemma-4-E4B-it` on 3 GPUs
-  with `-sm tensor` aborts in the meta splitter (maintainer's call: document only).
-
-- **Previous entry (2026-09-10): block-14 freed-cell KV handling moved to
-  kernel-side masked-V elimination (regeneration tip `ff2b35f49`).**  The
-  host-side `zero_freed` row zeroing (gfx1151-only, added 2026-09-09) is
-  REMOVED — `src/llama-kv-cache.{cpp,h}` are back to the upstream state.
-  In its place block 14 carries three unconditional kernel fixes that make
-  masked (freed/stale) flash-attention cells contribute exactly +0.0:
-  HIP `fattn-tile.cuh` (packed-bf16 PV), HIP `fattn-mma-f16.cuh`
-  (masked-V rows in staged shared tiles), Vulkan `flash_attn_cm1.comp` /
-  `flash_attn.comp` (dead columns never read V).  Validated on the Strix
-  Halo gfx1151 box with the host zeroing disabled: 16/16 determinism
-  gates PASS on every KV type each backend's FA supports (ROCm
-  f16/bf16/q8_0/q4_0; Vulkan also q4_1/q5_0/q5_1/iq4_nl), zeroing
-  ON==OFF bit-identical, test-backend-ops vs CPU 4591/4591 (ROCm) +
-  7822/7822 (Vulkan), no measurable decode/prefill regression.  Full
-  record in [`WORKLOG.md`](WORKLOG.md).
+  [`beta/block-15-campaign-wins/README.md`](beta/block-15-campaign-wins/README.md)
+  (marked PROMOTED).
 
 
 ## Layout
@@ -162,13 +154,11 @@ summary below is deliberately short and does not repeat them.
 ├── AGENTS.md              # working guide for LLM agents in this repo
 ├── MANIFESTS.md           # apply order, per-block verification, validation history
 ├── BASELINE.md            # fork point, patch provenance, drift policy
-├── GREEDY-PURITY.md       # block 10 decode-variance analysis (read before shipping)
+├── GREEDY-PURITY.md       # purity rulebook: index, invariants, per-finding claims (read before shipping)
+│                          #   narratives/evidence for the closed cases: archive/docs/GREEDY-PURITY-FINDINGS.md
 ├── WORKLOG.md             # dated delivery records (newest first; README points here)
-├── CONTAINERS.md          # prebuilt ROCm container images (GHCR) + workflow
-├── .github/workflows/     # docker-ghcr.yml: apply patches, build+push ROCm images
-├── .devops/               # rdna-rocm.Dockerfile (from upstream's rocm.Dockerfile)
-├── rdna-boosts-all.patch  # convenience: the entire 15-patch net as ONE patch
-├── patches/               # the delivery set: 0001-0015
+├── rdna-boosts-all.patch  # convenience: the entire 16-patch net as ONE patch
+├── patches/               # the delivery set: 0000-0015
 │   └── README.md          # apply instructions + block-12 env knobs + server config
 ├── scripts/
 │   ├── apply-all.sh       # the verified apply flow (git am; automatic -3 fallback on drift)
@@ -185,13 +175,14 @@ summary below is deliberately short and does not repeat them.
 > in `archive/docs/` (see also `archive/work/` for the closed experiments).
 > Do not mix them with the current `patches/` files.
 
-## The 14 blocks
+## The 16 blocks
 
 | patch | what |
 |-------|------|
+| `0000` | **structural and architecture fixes** — FA small-batch KV-split width invariance (issue #25) + Vulkan masked-V/freed-cell fixes (dead columns never read V). The base every later block applies on top of. |
 | `0001` | adaptive MTP draft depth (`--draft-mtp-adaptive`) |
 | `0002` | fused chunked gated-delta-net prefill kernel (bf16/WMMA, arch-segregated gfx12/gfx11) |
-| `0003` | BF16 KV cache + native-BF16 flash-attn |
+| `0003` | BF16 KV cache + native-BF16 flash-attn (+ the HIP masked-V/freed-cell fixes since 2026-09-10) |
 | `0004` | RDNA4 WMMA flash-attn + Q6_K mmq prefill perf (WMMA path also runs on RDNA3.0/3.5, tuned head limits) |
 | `0005` | CPU bit-identical decode/verify batches |
 | `0006` | host-buffer revert for discrete GPUs |
@@ -202,12 +193,14 @@ summary below is deliberately short and does not repeat them.
 | `0011` | skip CUDA graphs for multi-token PRE-FILL (decode keeps graph replay) |
 | `0012` | **hybrid HIP all-reduce** — custom internal AR for the small-tensor decode path, per-size hybrid dispatch vs RCCL, RDNA4-only gate (bounded in-kernel spin since 2026-08-30 fix round; builds without RCCL) |
 | `0013` | **fused MoE gate+up+GLU MMQ + mmvq short-K item-split** — prefill fused expert MMQ (RDNA4 + RDNA3_5 + RDNA3_0, Q3_K/Q4_K/Q5_K/Q8_0/Q6_K, env opt-out `GGML_CUDA_DISABLE_MOE_MMQ_FUSION`) + decode item-split (rpb 2/4/8) merged with the upstream has_fusion mmvq path |
-| `0014` | **qwen4exp / Qwen3.8-Flash-Next support** — QSA sparse FA (default) + fused indexer top-k, HC_MIX/HC_COMBINE fused decode ops, managed lazy reader, MTP draft-head, WS4 hyperconn prefill fusions, QSA decode campaign + per-arch dense/QSA decode policy (promoted from `beta/qwen4exp`; see `patches/README.md` block-14 notes) |
+| `0014` | **qwen4exp / Qwen3.8-Flash-Next support** — QSA sparse FA (default) + fused indexer top-k, HC_MIX/HC_COMBINE fused decode ops, managed lazy reader, MTP draft-head, WS4 hyperconn prefill fusions, QSA decode campaign + per-arch dense/QSA decode policy (promoted from `beta/qwen4exp`; see `patches/README.md` block-14 notes). The masked-V/freed-cell fixes it once carried now live in blocks 00 (Vulkan) and 03 (HIP). |
 
-> **Block 15 (attention-memory wins: V3 derived kq mask, V4/V5 native
-> q8_0/bf16 K/V, W1-W4) is NOT part of this delivery — it is staged in
-> `beta/block-15-campaign-wins/` and applied manually on top of the
-> 14-block tree, pending the maintainer's go-ahead.**
+| `0015` | **attention-memory wins (block 15)** — promoted 2026-09-12 from `beta/block-15-campaign-wins/`: **V3** derived kq mask (`LLAMA_KQ_MASK_DERIVED`, on by default), **V4** native q8_0 + **V5** native bf16 K/V in the FA kernels (both behind `GGML_CUDA_FA_KV_NATIVE`, opt-in default 0), **W1** QSA score-chain memory (`GGML_QSA_SCORE_MEM`), **W2** derived QSA per-block bias + visibility (`GGML_QSA_DERIVED_BIAS`/`GGML_QSA_DERIVED_VIS`), **W3** keys-only QSA indexer cache (`LLAMA_QSA_KEYS_ONLY`), **W4** ggml-alloc unused-view release (no gate; A/B revert in `beta/block-15-campaign-wins/ab/`).  ~3.4 GiB/GPU + ~1.2 GiB host saved on qwen4exp, ~800 MiB/GPU + ~800 MiB host on dense models, at ~1.3 % prefill / ~0.3 % decode. |
+
+> **Block 15 (attention-memory wins) is part of the delivery since
+> 2026-09-12** (`patches/0015`, promoted from
+> `beta/block-15-campaign-wins/`; a fresh set is now **16 patches**,
+> blocks 00-15).
 
 > **Greedy-purity note (read before shipping):** on the K-split decode
 > paths, block 10 (`0010`) is the only patch that changes decode numerics on
@@ -236,7 +229,7 @@ git checkout 9113cc188        # the SHA recorded in patches/README.md
 
 # 2. apply the set (automated; VERIFIED 2026-08-29, re-verified 2026-09-01/02/05/06/07 and 2026-09-08)
 bash <path-to-this-repo>/scripts/apply-all.sh .
-#    = git am patches/0001…0014  (one commit per block on a fresh `rdna-boosts` branch)
+#    = git am patches/0000…0014  (one commit per block on a fresh `rdna-boosts` branch)
 
 # 3. build + verify (trim -DGPU_TARGETS to your GPU arch for a faster build)
 cmake -B build -DGGML_HIP=ON -DGGML_HIP_RCCL=1 -DGPU_TARGETS="gfx1100;gfx1151;gfx1201" -DCMAKE_BUILD_TYPE=Release
@@ -253,8 +246,8 @@ cmake --build build -j
 ### Manual equivalent
 
 ```bash
-git am patches/000[1-9]-*.patch patches/001[0-4]-*.patch   # blocks 01-14
-git add -A && git commit -m "rdna-boosts: block 14: qwen4exp support"
+git am patches/000[1-9]-*.patch patches/001[0-5]-*.patch   # blocks 01-15
+git add -A && git commit -m "rdna-boosts: block 15: campaign memory wins"
 ```
 
 ## When upstream master moves

@@ -34,6 +34,34 @@ draft acceptance collapsed to 0/1527 (draft-mtp ~53 t/s vs plain ~90, where
 MTP should accelerate). Dense models and single-token MoE decode were
 unaffected, so every existing gate passed.
 
+The 2026-09-12 issue-#30 regression is a second worked example of a different class:
+the patch set made the mmvq knobs **band-uniform** (a purity requirement -- `nwarps` and
+VDR both participate in the K-split accumulation order, so decode and the verify batch
+must agree) but left them at their **single-token-tuned** values, which cost up to +35% on
+the verify widths (dense Qwen3.8-27B UD-Q4_K_XL, `q8_0` KV, `llama-batched-bench` B=8
+2.929 s stock / 3.958 s delivery).  Acceptance stayed flat (0.484 vs 0.466), so the
+acceptance rule passed; `llama-bench tg128` passed (single token is the one width that
+did *not* regress); block 13's `pl=8` check was old-vs-new *within* the delivery.  Only a
+**stock-relative** batched decode at the verify widths exposed it.
+
+Gate addition (2026-09-12, rule 5): before shipping any decode/verify or mmvq change, run
+an interleaved stock-vs-new `llama-batched-bench -npp 16 -ntg 32 -npl 1,4,8` with a
+quantized KV cache on a dense K-quant model and require the new build to be within noise
+of stock at B=1 and **no worse** at B=4/B=8.  The batched TG numbers are the instrument
+(they are acceptance-free); `draft-mtp` / `draft-mtp-adaptive` end-to-end throughput is
+the confirmation.  The amended verify path measured B=8 2.798 s vs stock 2.929 s; see the
+2026-09-12 (16) WORKLOG entry and the block-08 + block-10 amendment section in
+`../patches/README.md`.
+
+Follow-up (2026-09-12 (17)): the VDR half of the fix is now **per kernel** (dense upstream, MoE
+expert `mul_mat_vec_q_moe` keeps block-10's VDR=4).  The MoE expert kernel is not reached by
+`calc_nwarps` (one warp per token), so the band-uniform `nwarps=1` still applies to the MoE model's
+*dense* layers — that is the source of the residual MoE single-token/MTP delta vs the pre-(16)
+build (a diagnostic restoring per-type `nwarps=8` recovers MoE B=1 0.783 -> 0.716 s and MTP
+161 -> 167 t/s but costs the dense 27B MTP 35.9 -> 34.3 t/s).  The gate is unchanged, but when
+judging a change also measure the **affected model class**: a knob that is dense-purity-mandated
+can still cost a MoE model's dense layers (and vice versa).
+
 ## Protocols
 
 ### Protocol A — fast per-build gate (llama-cli, fixed seed)
@@ -63,11 +91,27 @@ Run the same with `--spec-type none` and compare. Gate rules:
    and within ~10% on generic prose at draft depth 3. (Do NOT test at
    `--spec-draft-n-max 12` fixed depth: fixed-depth over-drafting is
    expected to lose; the adaptive configs C3/C6 below are the meaningful
-   high-depth tests.)
+   high-depth tests.)  **As of 2026-09-11 (12) the CLI clamps
+   `--spec-draft-n-max` to 7** (a visible notice; `LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0`
+   keeps a larger value), so any pre-existing baseline measured above 7 must be
+   re-measured at 7 (or with the env set) before comparing.  See
+   `../beta/block-15-campaign-wins/BETA-TESTING.md` for the notice semantics.
 3. **Same-seed determinism vs the previous release** (dense): outputs must
    be byte-identical between the build under test and the known-good build.
    On MoE this is not required (fusion-ordering numerics drift is an
    accepted trade-off); sane output is the bar there.
+4. **Purity range is `n_max <= 7`** (2026-09-11, after the block-12 fix):
+   `--spec-type none` == `draft-mtp` is byte-identical up to an 8-token verify
+   batch, which is the designed limit -- beyond it the flash-attention launcher
+   switches to WMMA (`Q->ne[1] > 8`), whose reduction order differs from the
+   tile kernel's.  On 2-GPU `-sm tensor` the range used to stop at `n_max = 5`
+   because of a second, fork-specific cause (block 12's size-based all-reduce
+   dispatch changed the reduction algorithm when the batch crossed 32768
+   elements = 7 tokens); that was fixed on 2026-09-11, and the earlier
+   "`n_max <= 15`" claim was never validated past `n_max = 4`.  Do not use
+   `none == draft-mtp` equality above `n_max = 7` as a gate; use acceptance +
+   MTP-vs-plain throughput instead.  See `../GREEDY-PURITY.md` §11.  **The range
+   is now enforced:** the CLI clamps the depth to 7 (2026-09-11 (12)).
 
 ### Protocol B — server harness (dense canonical, long-context workloads)
 

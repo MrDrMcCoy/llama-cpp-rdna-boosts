@@ -1,5 +1,133 @@
 # Block 0015 handover — campaign wins → beta delivery (+ upstream candidates)
 
+> **PROMOTED to the delivery 2026-09-12.**  Block 15 is now
+> `patches/0015-rdna-boosts-block-15-campaign-memory-wins.patch` (delivery =
+> 16 patches, block 00 + blocks 01-15; `scripts/apply-all.sh` applies it).
+> The beta window is closed and the staging/procedure notes below are the
+> historical record; the promotion validation is in the beta `README.md`
+> (PROMOTED) and the 2026-09-12 WORKLOG entry.
+
+> **REVALIDATED 2026-09-11 — see §10.6 for the outcome.**  The beta patch was cut on
+> `b425aa8f7` (the 14-block chain) and has been **re-cut against canonical tip `389c5341f`
+> (tree `928852cdc`) and re-validated end to end**: new beta tip **`fe4f55278`**
+> (tree `ffe197e2f`) — and **re-cut again 2026-09-11** after block 14's hyper-connection band
+> amendment moved the canonical tip: base `1d8f53594` -> **beta tip `54859fdda`, tree
+> `543ccc015`**, metadata/offset-only (0 changed body lines) — see the beta `README.md`;
+> **re-cut a third time 2026-09-11** after the block-08 FA kernel-family amendment (F1): base
+> `1bcf4e82d` -> **beta tip `0c8099ca2`, tree `7335b923d`**, again metadata/offset-only; and
+> **re-cut a fourth time 2026-09-11** after block 13's F2 cause-2 band-uniformity amendment: base
+> `bfaa83d8a` (tree `4e5f2952f`) -> **beta tip `3f4e0747d`, tree `d50b4e121`**, metadata-only (block 15
+> does not touch `mmvq.cu`; the patch file is 3722 lines before and after, only the `From <sha>` line
+> differs, and re-applying on the new base reproduces `d50b4e121` exactly).  **Re-cut a fifth time
+> 2026-09-11** after the two same-day band amendments (block 13's fused shared-expert epilogue band,
+> block 14's QSA decode arm): base `5ad11fd35` (tree `3e7accbd7`) -> **beta commit `f3ece1e12`**, tree
+> `5316920f13`.  This one needs **`git am -3`** (block 15 patches `src/models/qwen4exp.cpp`, where the
+> block-14 amendment added 9 lines); the patch body is otherwise unchanged (3722 lines, only the `From`
+> line and the `qwen4exp.cpp` hunk headers differ), so no beta number needs re-measuring.  **Re-cut a
+> sixth time 2026-09-11** after the F3 step-1 amendments (block 08's quantized KV-type enablement,
+> block 14's QSA-vs-KV-type arm gate + tensor-split gate): base `6f07fe67a` (tree `0c9dece6b`) ->
+> **beta commit `8c377b958`**, tree `34527a2926246893104015d6ca5d12844b14f037`.  This one is **functional**, not metadata-only — the
+> merge threads the KV type through block 15's refactored `qwen4exp_qsa_sparse()` (new
+> `llama_cparams::type_k/type_v`), which is a no-op for every f16/q8_0 beta config: the tree builds and
+> the beta output is byte-identical to the delivery's at the gate configs (qwen4exp f16 plain
+> `804de0576868`; 27B f16 `n_max 3` acceptance `0.82716`), so the recorded numbers stand.
+> **Re-cut a tenth time 2026-09-11 (12)** after two delivery amendments (block 01: `--spec-draft-n-max`
+> clamped to 7 with a visible notice + `LLAMA_SPEC_DRAFT_N_MAX_CLAMP=0`; block 14: mixed K/V cache types
+> hard-rejected).  Base `484231cb9` (tree `fc3c73da4ac68e92348043b992fb963b006e14df`) -> **beta tip
+> `a796a1d49`**, tree **`b48565e69f77f0c20a20cd75d87c2559d11e6de2`**, patch **3 811 lines**.  `git am -3`
+> merged cleanly (the `llama-context.cpp` region now carries both the new reject and block 15's
+> tensor-split type gate); the only delta vs the ninth re-cut is those three delivery files.  Testers must
+> pass matching `-ctk`/`-ctv`.  See `README.md` (tenth re-cut) and `BETA-TESTING.md`.
+> **Re-cut a seventeenth time 2026-09-12 (13)** after the block-14 QSA indexer-score decode/verify
+> band-uniformity amendment (TODO item 4(b) root cause).  Base `d306d4b4b` (tree
+> `3b0874b6aa367fea846a437b45f1689bd173b38c`) -> **beta tip `f399b1349`**, tree
+> **`c3142fe0b311757f458647f172f623859f5bc983`**.  Conflict-free (block 15 does not touch
+> `mmvf.cu`/`mmvf.cuh`/`ggml-cuda.cu`), round-tripped strict `git am` -> identical tree.  gfx1151:
+> round-trips on the canonical tree and the delivery cross-check (2026-09-12 (14)) validated the
+> (eighth) fix there.  No tester-visible change.  See `README.md`.
+> **Re-cut a sixteenth time 2026-09-12 (12)** after the block-14 MTP-export logits-purity amendment
+> (TODO item 4(a)).  Base `c6f1e8e78` (tree `e1e42e23c2913cd529b0064eb1cb74525a746098`) -> **beta tip
+> `bdd09891d`**, tree **`3a47913c0bdca7f1154a8f0310a20435a36c0faa`**, patch **206 454 bytes**.  Conflict-free
+> cherry-pick, round-tripped (strict `git am`), builds clean; gfx1151 revalidation: `GATED_DELTA_NET`
+> 46/46, `FLASH_ATTN_QSA` 22/22, `test-recurrent-state-rollback` PASS, all four gate combos +
+> `draft-mtp n_max 3` byte-identical (`0fc4910d5824`, 632 chars).  No tester-visible change.  See `README.md`.
+> **Re-cut a fifteenth time 2026-09-12 (10)** after the block-02 rollback-bounded chunked-GDN
+> amendment (`n_rs_batch` + the pre-batch snapshot slot).  Base `47a9d4d86` (tree
+> `c24871386c479865d41476726cf1f01c43b23ea6`) -> **beta tip `eb15f3ee1`**, tree
+> **`ffa3a11c30ba6d42dea2520f402126370df3bbb6`**, patch **3 819 lines**.  Conflict-free cherry-pick,
+> round-tripped, builds clean; gfx1151 revalidation: `GATED_DELTA_NET` 46/46, `FLASH_ATTN_QSA` 22/22,
+> `test-recurrent-state-rollback` PASS, all four gate combos + `draft-mtp n_max 3` byte-identical
+> (`0fc4910d5824`, 632 chars).  No tester-visible change.  See `README.md`.
+> **Re-cut a fourteenth time 2026-09-12 (9)** after the block-14 configurable QSA prefill arm +
+> device-query arm gate amendment.  Base `47a9d4d86` (tree
+> `c24871386c479865d41476726cf1f01c43b23ea6`) -> **beta tip
+> `86c7df1f5`**, tree **`66f0762a2ec19cbc34b1842d1b5984bb82ecec45`**, patch **3 819 lines**.  First re-cut
+> with a real merge: block 15's hoisted `qwen4exp_qsa_sparse()` now takes `(model, hparams, il, cparams)`
+> and calls the delivery's `qsa_op_supported()` instead of its own type-list copy, and its probe tensor
+> passes block 15's two extra `ggml_flash_attn_qsa` arguments.  Round-tripped; builds clean; gfx1151
+> revalidation: `FLASH_ATTN_QSA` 22/22 and all four gate combos plus `draft-mtp n_max 3` are
+> byte-identical (`0fc4910d5824`, 632 chars, = the delivery build's value).  The thirteenth re-cut is
+> **superseded — do not use** (its exported patch omitted the `nullptr, nullptr` argument and it was cut
+> against a prefill default the maintainer has since corrected to always-QSA).  See `README.md`.
+> **Re-cut a twelfth time 2026-09-12 (2)** after the block-13 RDNA3_5 single-token-only mmvq fusion skip
+> (the dense gate+up+GLU fusion and the weighted-down MoE tail; gfx1151-only, opt-in
+> `GGML_CUDA_ENABLE_RDNA3_5_SINGLE_TOKEN_FUSIONS=1`).  Base `13af95ac1` (tree
+> `f4791066f4a582316b1ca95f51c96cd10b905ef7`) -> **beta tip `888a59ee0`**, tree
+> **`476d2d1e95947de7cc8cd806c40efc0f01927cd3`**, patch **3 811 lines**.  Strict `git am` applies
+> (block 13's amendment touches only `ggml-cuda.cu`/`mmvq.cu`, which the patch does not hunk-touch), and
+> the export is byte-identical to the eleventh re-cut apart from the `From <sha>` line; no recorded
+> number moves.
+> **Re-cut an eleventh time 2026-09-12** after the block-13 column-block amendment (bit-identical; repays
+> the band amendment's `pl=8` cost).  Base `124abba9e` (tree `d7c8e8984b8bd65838d8ae58c0f5de449d9c5d4d`)
+> -> **beta tip `a90f75896`**, tree **`ed6ee74df8b690c5a1584adb3f85c45eda70a09b`**, patch **3 811 lines**.
+> `git am -3` merged cleanly; the patch differs from the tenth re-cut only in the `From <sha>` line.  The
+> re-cut builds and its smoke gates reproduce the tenth re-cut's values, so no recorded number moves.
+> **Re-cut a ninth time 2026-09-11 (11) — the `LLAMA_QSA_SPARSE_FA=0` blocker is FIXED, one line.**  The
+> base did **not** move (still `6d3155faa`, tree `0c3f0c2c2f4e7439d9489d45573a4021a8eee106`); only block 15
+> changed: the mask chain's `ggml_tensor * kq_mask_top_k = ggml_set_rows(...)` in `build_attn_qsa` had been
+> shadowing the outer variable declared by the V2/V3 refactor, so the chain was built but its result never
+> reached the attention — the dense arm attended unmasked (a causal leak).  Dropping the inner
+> `ggml_tensor *` fixes it.  Base `6d3155faa` -> **beta tip `3712e2dc1`**, tree
+> **`e39f8c2b6f0593113b93c4e57c512bc7373a2250`**, patch **3 811 lines** (the 8th re-cut + 1 diff line + the
+> commit-message paragraph).  Same single `git am -3` conflict as the seventh/eighth re-cuts
+> (`qwen4exp_qsa_sparse()` must accept `GGML_TYPE_IQ4_NL`); the tree builds clean and the exported patch
+> round-trips (identical tree).  Gates: the oracle sparse `6.5394` / dense `6.5377` (= the delivery; the
+> blocker's `1.0558` is gone), dense-arm texts byte-identical to the delivery in every configuration, the
+> production arm untouched (sparse f16 `804de0576868`, q4_1 `886292b17a93`, `plain == n_max 3 == n_max 7`,
+> MTP f16 bit-identical, `LLAMA_QSA_OFF=1` `6.5376`), KV reserves unchanged, backend suites OK.  The
+> `iq4_nl` W2 caveat stands (and now also covers its MTP acceptance).  See `README.md` (ninth re-cut) and
+> `BETA-TESTING.md` §4c (resolution) + §4d.
+> **Re-cut an eighth time 2026-09-11 (10)** after block 08's fifth amendment (the `iq4_nl` FA
+> enablement: predicate, vec dispatch, the 15 missing `fattn-vec-instance-iq4_nl-*.cu` files, the three
+> CMake default lists, `dequantize_q4_nl` and the three non-contiguous conversion switches) plus the
+> matching block-14 entries (QSA kernel + CPU reference + `qsa_kv_native` + the tensor-split gate + the
+> engine test list): base `6d3155faa` (tree `0c3f0c2c2f4e7439d9489d45573a4021a8eee106`) -> **beta commit
+> `d0f71b2e8`**, tree `39540b7f4fd8e8569dee64bfa3ee84bf1b20e75d`, patch **3 787 lines**.  Same single
+> conflict as the seventh re-cut (`qwen4exp_qsa_sparse()` must accept `GGML_TYPE_IQ4_NL`) — use
+> `git am -3`; the test file needed no fix (block 15's body already carries `nullptr, nullptr`).  The
+> tree builds clean, the patch round-trips, and the gate sweep matches the delivery (qwen4exp f16 plain
+> `804de0576868`, q4_1 plain `886292b17a93`, f16 `n_max 3` `0.47009`, `iq4_nl` `0.52727`, 27B f16
+> `0.82716`, width purity per split/type, `FLASH_ATTN_QSA` 22/22, `GATED_DELTA_NET` 46/46,
+> `FLASH_ATTN_EXT` 5940/5940, `LLAMA_QSA_OFF=1` PPL `6.5376`) **except two iq4_nl/arm findings**:
+> `LLAMA_QSA_SPARSE_FA=0` is broken in block 15 for *every* KV type (PPL `1.0558` vs the delivery's
+> `6.49–6.55`, pre-existing, no gate fixes it) — a promotion blocker, since that arm is the quality
+> oracle — and W2's derived bias is not bit-exact for `iq4_nl` (benign: identical sparse-arm PPL).  See
+> `README.md` (eighth re-cut) and `BETA-TESTING.md` §4c/§4d.
+> **Re-cut a seventh time 2026-09-11 (9)** after the **fourth** block-14 amendment (the QSA quantized-KV
+> enablement + the K/V-head chunking fix): base `a0cd6ce02` (tree `0966e66731`) -> **beta commit
+> `5a0734c9d`**, tree `6b1155b68b1741d7e7c6e8f80b88ed90ce406bd6`, patch **3 787 lines**.  One real
+> conflict in `src/models/qwen4exp.cpp` (block 15's `qwen4exp_qsa_sparse()` needs the extended QSA-type
+> conjunct; `fattn-qsa.cu`/`ops.cpp`/`test-backend-ops.cpp` auto-merged) **plus a semantic fix the build
+> caught**: block 15 adds `cell_vis`/`q_vis` to `ggml_flash_attn_qsa`, so the delivery's new
+> `test_flash_attn_qsa` passes `nullptr, nullptr` in the beta.  Verified as a no-op at the gate configs
+> against the delivery build (qwen4exp f16 plain `804de0576868`, q4_1 plain `886292b17a93`, 27B f16
+> `n_max 3` acceptance `0.82716`); the patch round-trips on a fresh `a0cd6ce02`.
+> The dependent delta was exactly one file
+> (`fattn-common.cuh`), the textual apply was clean, every 2026-09-10 number
+> reproduced to the last decimal, and three **pre-existing** follow-ups were
+> found (§10.7).  §10.1's original `[PATCH 16/16]` renumbering claim was **wrong** —
+> see the correction there.
+
 > **STATUS 2026-09-10 (end of the cut session): DONE — Block 15 is CUT and
 > in the delivery.**  `block-15-campaign-wins.patch`
 > (canonical tip `09a137566` on a fork rebuilt at `9113cc188`), 15 patches
@@ -425,6 +553,14 @@ plumbing + probe + enable; the three V3 patches are already in the fork tree), `
 (V4, 6 files, +357/−47, opt-in, also already in the fork tree).  W3 and W4 are the only campaign pieces
 not yet on the fork tree.
 
+> **Revalidation artifacts (2026-09-11, `/tmp` — rebuild if wiped):** `/tmp/bin-15blk` = the delivered
+> 15-patch build (baseline), `/tmp/bin-blk15` = the re-cut block-15 build (`fe4f55278`); `/tmp/blk15` =
+> the worktree holding the re-cut block-15 commit (branch `blk15-recut`); `/tmp/p16b/` = the regenerated
+> 16-patch set; `/tmp/rv-sim2/` = the clean-apply simulation result (16 commits, tree `ffe197e2f`);
+> the reusable driver + KV-capable probe are committed in `../../wip/kv-quant-purity-followups/tools/`
+> (`rv.sh`, `logits-dump-kv.cpp` — the latter is the width probe with `CTK`/`CTV`, which is what the F1
+> table needs).  `/tmp/lw-kv-blk15` and `/tmp/lw-kv-15blk` were the two probe builds.
+
 **Volatile helpers** (rebuild; `/tmp` may be wiped): `/tmp/bin-pristine` (14 blocks), `/tmp/bin-l2` (W1),
 `/tmp/bin-l1` (W1+W2 pre-guard), `/tmp/bin-l1guarded` (= the current tree), `/tmp/bin-l3b` (tree + W4),
 `/tmp/bin-keysonly` (W3), `/tmp/bin-l0base|l0c|l0d` (instrumented allocators; source
@@ -540,3 +676,180 @@ None blocking.  Everything V3/V4 raised is either answered or explicitly deferre
    costs a bf16 user ~712 MiB/GPU at ctx 204800 / ub 2048 and is the recommended next lever (§3.4).  It is
    the *easier* case than q8_0 (in-place conversion keeps the cp_async pipeline, so it can likely ship on
    by default) and it belongs in Block 15 if it lands before the cut.
+
+
+---
+
+## 10. Revalidation against the current delivery (2026-09-11) — **THE CURRENT TASK**
+
+**Why this exists.**  The beta patch was cut on **`b425aa8f7`** — block 14 of the
+**14-block** chain (block 13 `e61676292`), i.e. *before* block 00 existed and
+before the 2026-09-11 block-02/12/13 amendments.  The delivery is now a
+**15-patch set** (block 00 + blocks 01-14) at canonical tip **`389c5341f`**
+(net tree **`928852cdc`**).  Block 15 must be re-cut against that tree and
+re-validated; §10.3/§10.4 are the gates.
+
+### 10.1 The dependency delta — measured 2026-09-11, and it is small
+
+`git apply --check block-15-campaign-wins.patch` on a worktree at `389c5341f`:
+**clean, no rejects**, a single hunk offset (`fattn-common.cuh` hunk #7 lands at
+line 1439 = +8 lines).  Per-file base blob hashes (`b425aa8f7` → `389c5341f`) for
+all **23** files the patch touches: **22 are identical**, exactly one changed.
+
+| file | old base blob | new base blob | what changed |
+|---|---|---|---|
+| `ggml/src/ggml-cuda/fattn-common.cuh` | `7442bc22a` | `22eec7d57` | **block 00** (FA small-batch KV-split width invariance, issue #25): inside `launch_fattn` the `parallel_blocks`/`ntiles_dst` heuristic is evaluated as if `n_q == 1` when `Q->ne[1] <= 8`, so every decode/verify width selects the *same* KV split. +8 lines. |
+
+Unchanged (blob-identical to the cut base — their `index` lines stay valid):
+`ggml/include/ggml.h`, `ggml/src/ggml-alloc.c`, `ggml/src/ggml-backend-meta.cpp`,
+`ggml/src/ggml-cpu/ops.cpp`, `ggml/src/ggml-cuda/fattn-mma-f16.cuh`,
+`fattn-qsa.cu`, `fattn-tile.cu`, `fattn-tile.cuh`, `fattn-vec.cuh`, `fattn.cu`,
+`indexer-topk.cu`, `ggml/src/ggml.c`, `src/llama-context.cpp`,
+`src/llama-cparams.h`, `src/llama-graph.cpp`, `src/llama-graph.h`,
+`src/llama-kv-cache.cpp`, `src/llama-kv-cache.h`,
+`src/llama-memory-hybrid-idx.cpp`, `src/llama-memory-hybrid-idx.h`,
+`src/models/qwen4exp.cpp`, `tests/test-backend-ops.cpp`.
+
+**Consequences for the re-cut (verified 2026-09-11):** only `fattn-common.cuh`'s
+*pre-image* hash changes (along with its post-image and one `@@` hunk header), and the
+`From <sha>` identity changes (the re-cut commit).  **CORRECTION to the first draft of this
+section: no renumbering is needed, and `[PATCH 16/16]` was wrong.**  The repo convention is
+`git format-patch --start-number 0 $BASELINE..$TIP`, which makes the denominator the **last
+block index**, not the count: the delivered 15-patch set reads `[PATCH 00/14]`…`[PATCH 14/14]`,
+and the beta patch's long-standing **`[PATCH 15/15]` was already correct** (verified: regenerating
+the 16-commit range with the same convention reproduces all 15 delivery patch bodies
+byte-identically and emits block 15 as `[PATCH 15/15]`).  On promotion the whole set's
+denominator simply moves `/14` → `/15`, which `scripts/make-patches.sh` does by construction.
+
+### 10.2 The one real semantic risk — block 00 and V4/V5 in the same function
+
+Block 00's fix and Block 15's V4/V5 operand-staging changes live in **the same
+function** (`launch_fattn`) and the same decision region.  Block 00 makes the
+KV-split heuristic query-width-independent; V4/V5 change how K/V are staged
+(native q8_0/bf16 instead of an F16 scratch) and therefore the smem/alloc-size
+queries.  Both feed the split choice.  **A clean textual apply proves nothing
+about that interaction**, so the revalidation must:
+
+1. show the selected split is **invariant to the KV staging type** (V4/V5 off vs
+   on) across the whole decode/verify band;
+2. re-establish the **dense `--spec-draft-n-max <= 7` (W <= 8) guarantee** for
+   every gate combination — with the **raw-logit probe**
+   (`wip/sm-tensor-plain-vs-spec/logits-dump-singlewidth.cpp`), **never** the
+   text gate (a 300-token text match hid already-divergent logits at W=9);
+3. confirm `FATTN_KV_NATIVE_{NONE,Q8_0,BF16}` (the single shared type code used
+   by the launcher, the alloc-size query and the kernels) still yields the same
+   `ntiles`/`ntiles_KV` values as the unamended launcher.
+
+### 10.3 Correctness validations (re-run all; the 2026-09-10 records are history)
+
+| # | check | detail / new-invariant notes |
+|---|---|---|
+| C1 | reserve matrix | 5 models × ub 2048/1024/512 × V4/V5 off/on; each number must reproduce the per-win records and compose additively (qwen4exp pristine 6690.40 → W1 4450.40 → W1+W2 **3251.39**; W2 alone 5491.39; gates off = 6690.40/1262.70 exactly) |
+| C2 | same-seed **byte-identical** output, gates flipped | 4B, 27B, **gemma-4-E4B (SWA)**, **gemma-4-31B (SWA)**, qwen4exp — short + 40k prompt, every gate combo. The SWA models are mandatory: V3 changes the kq mask |
+| C3 | **dense `n_max <= 7` probe matrix** *(new invariant)* | 1 GPU / 2-GPU `-sm layer` / 2-GPU `-sm tensor` / 3-GPU `-sm tensor`: W=1..8 bit-identical, W=9 divergent (cause B, accepted). Run per gate combo (V3/V4/V5). **The boundary must not move** |
+| C4 | **MoE asterisk** *(new, accepted)* | qwen35moe: default W=1 != W=3 (accepted, rule 3); with `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` W=1 == W=3 (`bd138ad2`). Validate the **delivery default first**, then the switch — never flip a switch to make a gate pass |
+| C5 | adaptive-MTP gate | 27B, qwen4exp, MoE — per gate combo; acceptance must equal the **in-session** baseline (the absolute number is prompt/config dependent: the MoE read 0.675 in the old record and **0.58378** with the current command — always measure baseline and arm in the same session) |
+| C6 | op suites | `FLASH_ATTN_EXT` on ROCm0 (both V4/V5 gates) + CPU incl. **the six derived-mask cases**; `GATED_DELTA_NET`; VIEW/CONT/CPY/DUP/CONCAT; `test-alloc`; `test-batch-alloc` |
+| C7 | W4 | repro 56.00 → 16.00 MiB and `ab/w4-revert.patch` restores `ggml-alloc.c` byte-identically |
+| C8 | clean-apply simulation | fresh `9113cc188` + `scripts/apply-all.sh` (strict **15/15**, tree == `928852cdc`) + the re-cut block-15 patch (16 commits) + fresh build; record the resulting tree |
+| C9 | serving | `--parallel 4` works (the RDNA3_5 V3 fix), gfx1151 pass if the hardware is available (`wip/strix-halo/GATE-2026-09-10-block15-rdna35.md` is the template) |
+| C10 | reference discipline | **`GGML_CUDA_ALLREDUCE=nccl` is NOT a bit-identical reference under `-sm tensor`** (2026-09-11 HEADER correction in `AGENTS.md`: the internal AR always BF16-round-trips while NCCL reduces small tensors in FP32). Use a known-good build or the probe |
+
+### 10.4 Performance validations (re-baseline in-session)
+
+| # | check | reference |
+|---|---|---|
+| P1 | prefill A/B, interleaved same-binary, pp20480/ub2048 | V3 −1.28 % (4B) / +0.28 % (27B); V4 a further −1.85 % (4B) / −1.72 % (27B); V5 0.2–2.4 % by prompt length. Re-measure, do not quote |
+| P2 | decode | V3/V4/V5 "within noise" — against **current** baselines: MoE 1 GPU tg128 **101.52** / pp512 **4858.6** (post-MMID-fix), dense 27B 2-GPU tensor tg128 **32.00** / pp512 **2033.5** |
+| P3 | MTP | 27B (0.76744 historically), qwen4exp (0.44262 historically), MoE; re-measure the baseline in the same session (see C5) |
+| P4 | reserves | the MiB numbers per model/gate (the block's whole point) |
+| P5 | switches | if touched: `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` costs −3.0 % MoE decode (tg 101.5 → 98.5); V4/V5 opt-in cost as documented |
+
+### 10.5 Landing procedure (when the validations pass)
+
+1. Work in a canonical fork rebuilt at **`9113cc188`** (or reuse `/tmp/canon-llama`
+   at `389c5341f`, tree `928852cdc`, ROCm `/opt/rocm-7.14-gfx1201`, build dir
+   `build-base`).  Block SHAs 00-14: `1c7ab0e89`, `aa4108b9d`, `6e81ed5ed`,
+   `4dc962aa9`, `03d004517`, `70f330aed`, `d2fc2cb34`, `110b5391d`, `5ea46d1b2`,
+   `29880b1e4`, `33a1e5f27`, `f4e75a30a`, `cac14423e`, **`855515420`** (block 13,
+   amended twice 2026-09-11), **`389c5341f`** (block 14).
+2. Apply `block-15-campaign-wins.patch` on top, squash to one block-15 commit,
+   and re-cut the patch file: `From <new sha>`, `[PATCH 16/16]`, the
+   `fattn-common.cuh` pre-image hash, body otherwise byte-identical.
+3. Record in this directory: the new base (`389c5341f`/`928852cdc`), the new
+   block-15 SHA, the resulting tree, and the sim tree; refresh the README/HANDOVER
+   numbers and the "14-block"/"14/14" references (they now read 15/15 + block 15).
+4. **Promotion (only on the maintainer's go-ahead, beta window closed):** move the
+   patch to `patches/0015-…`, make `apply-all.sh` a 16-block flow, and sweep the
+   tip/tree + block counts in `AGENTS.md`, `MANIFESTS.md`, `README.md`,
+   `BASELINE.md`, `TODO.md`, `WORKLOG.md`, `scripts/make-patches.sh`, plus a new
+   WORKLOG entry (never edit the dated 2026-09-10 records in place).
+5. Commit and push to **this repo's `origin` only**.
+
+### 10.6 Outcome (2026-09-11) — DONE
+
+**Re-cut:** block 15 = **`fe4f55278`** (tree **`ffe197e2f`**, parent `389c5341f`); the re-cut patch
+replaced `block-15-campaign-wins.patch` in this directory.  **Clean-apply:** fresh `9113cc188` +
+`apply-all.sh` → strict **15/15**, **0 whitespace warnings**, tree `928852cdc`; + the re-cut patch →
+16 commits, tree `ffe197e2f`.
+
+**Every 2026-09-10 claim reproduced.**  The full tables are in `README.md` (status block + §6/§7);
+the headlines:
+
+* **Reserves — every number to the last decimal** (27B 1920.3284/880.3360 → 1121.1252/81.1329; 4B
+  1800.3284/840.3360 → 1001.1252/41.1329 → 257.1252/41.1329; E4B 1887.3517→1078.1740→452.1740; 31B
+  2753.3517→1942.1759→718.1759; qwen4exp 6690.3987/1262.6954 → W1 4450.3987 → W2-only
+  5491.3909/63.6876 → **3251.3909/63.6876** with indexer KV 956.26 → **318.76**; bf16/V5 4B
+  968.8596→256.8596 = the f16 cost, 27B 1072.8596→488.8596, E4B 1062.8927→404.8927, 31B
+  2068.8947→716.8947).
+* **The §10.2 risk is cleared**: the 27B width probe reproduces the delivered reference hashes exactly
+  (1 GPU `4089b4d4`, 2-GPU tensor `a4817ee6`, 3-GPU tensor `91434ea9`; `W=9` `72af52db`/`b059daa6`/
+  `bc3faabd`), so `n_max <= 7` holds and block 15 changes no FA numerics; **V4/V5 on == off
+  bit-identically**, so the operand staging does not perturb the split.
+* **Coherence byte-identical** across gates (4B, both SWA gemmas, 27B short **+ 40k**, qwen4exp).
+* **MoE asterisk intact**: `ac8825358d9adfda`/`bd138ad2326fbbf2`, and
+  `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE=1` collapses both to `bd138ad2326fbbf2` — identical on both builds.
+* **MTP**: 27B 0.90789 and MoE 0.58378 identical on both builds; qwen4exp 0.47826 vs 0.50000 is the
+  documented layout sensitivity (its raw logits are bit-identical across builds).
+* **Op suites**: `FLASH_ATTN_EXT` 7859/7859 ROCm0 + 7859/7859 CPU (6 derived cases), `GATED_DELTA_NET`
+  OK, `test-alloc`/`test-batch-alloc` clean, W4 round trip 16.00 → (revert) 56.00 → 16.00 MiB.
+* **Cost**: 4B prefill V3 −1.6 % / V4 −1.75 %, decode flat; 27B V3 −0.3 %, decode flat; headline vs
+  the delivery build 27B pp512 −1.7 % / tg128 flat, MoE pp512 −0.3 % / tg128 −1.25 %.
+* **gfx1151: not re-run** (no such hardware on this host — 3× gfx1201 + a gfx1036 iGPU); the re-cut
+  touches no gfx1151-relevant code.
+
+### 10.7 Follow-ups found by the revalidation (PRE-EXISTING, not block-15 regressions)
+
+Brief + evidence + repro commands: **`../../wip/kv-quant-purity-followups/README.md`**; summary in
+`README.md` §7.
+
+* **F1 — quantized-KV width purity.**  `q8_0/q8_0` and `q4_0/q4_0` break the dense `n_max <= 7`
+  guarantee (`W=1 == W=2`, then `W=3..8`); text level on the 27B: plain `8ed58aa9` (1330 chars) vs
+  `n_max 3 == n_max 7` `da56855b` (1406 chars).  f16, bf16, q4_1, q5_0, q5_1 and iq4_nl are pure.
+  The impure set is exactly the two types with a *fast native* both-quantized FA path (>7700 t/s);
+  everything else stages through F16 and is ~3.4x slower.  Mixed K/V types are not a usable control
+  (2–3.6x slower, different path).
+* **F2 — qwen4exp width purity.**  The fused sparse QSA path is not width-invariant
+  (`W=1` `dcf1ae66…` != `W=3` `1c801d63…`), identically on both builds; its acceptance gate still
+  passes.  Either fix it the block-00 way or document the exemption.
+* **F3 — sub-q8_0 quant parity.**  q4_1/q5_0/q5_1/iq4_nl are pure and 1800–2400 MiB but run at
+  2197–2293 pp512 / 56–64 tg32 vs 7713–7838 / 95–99 for the native ones.  They have no native FA
+  path; extending block 15's own `FATTN_KV_NATIVE_{NONE,Q8_0,BF16}` type-code design to them is the
+  obvious route.  **iq4_nl is the same size as q4_0 (1800 MiB) and is pure** — a native iq4_nl would
+  obsolete q4_0.  Any new native path must be built **width-invariant**.
+* **Decision (maintainer, 2026-09-11):** differing K and V cache *types* are **rejected as an accepted
+  limitation** — mixed pairs are always 1.7–3.6x slower than the same-type equivalent and never
+  smaller.
+
+### 10.8 What not to do
+
+- **Do not fold block 15 into `patches/`** before the maintainer's go-ahead — it
+  is a beta, and `patches/` is the 15-block delivery.
+- Never apply anything to `~/llama.cpp`'s remotes; the fork checkout is
+  disposable and nothing is ever pushed from it (`AGENTS.md` pushing policy).
+- Do not flip `GGML_CUDA_DISABLE_SHEXP_DOWN_GATE` / the V4/V5 defaults to make a
+  gate pass: validate the delivery's **defaults**, then the switches.
+- Do not treat a text match as evidence *against* divergence, and do not use
+  `GGML_CUDA_ALLREDUCE=nccl` as a bit-identical reference.
+- Do not edit the dated 2026-09-10 validation records in place — add a new dated
+  section/entry (this section is that practice).
